@@ -18,5 +18,8 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install dependencies
+        run: pip install requests ccxt pandas ta
+
       - name: Run scanner
         run: python main.py
