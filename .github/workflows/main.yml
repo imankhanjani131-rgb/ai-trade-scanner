@@ -22,4 +22,6 @@ jobs:
         run: pip install requests ccxt pandas ta
 
       - name: Run scanner
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: python main.py
