@@ -1,183 +1,889 @@
 import pandas as pd
 import backtest as bt
 
+VERSION = "SHORT-V2-INDEPENDENT"
 
-# ============================================================
-# AI TRADE SCANNER - SHORT FILTER DISCOVERY
-#
-# Uses the already-tested OKX historical engine
-# from backtest.py
-#
-# IMPORTANT:
-# - LONG robot main.py is NOT changed
-# - This file only tests SHORT strategies
-# - Target = TP2
-# - Costs/slippage are inherited from backtest.py
-# ============================================================
+RECENT_DAYS = 90
+LAST30_DAYS = 30
 
-
-VERSION = "SHORT-DISCOVERY-V1"
-
-DAYS = bt.DAYS
-TEST_DAYS = bt.TEST_DAYS
+# Short can have a different optimum from LONG.
+TARGETS = (1.5, 2.0)
 
 
 # ============================================================
-# METRIC HELPERS
+# PASS / FAIL RULES
 # ============================================================
 
-def metrics_ok(metrics, period):
+def metric_pass(m, period):
 
-    if metrics is None:
+    if m is None:
         return False
 
     if period == "OLDER":
-
         return (
-            metrics["trades"] >= 20
-            and metrics["pf"] > 1.00
-            and metrics["net_r"] > 0
+            m["trades"] >= 20
+            and m["pf"] >= 1.05
+            and m["net_r"] > 0
+            and m["max_dd"] < 30
         )
 
     if period == "RECENT":
-
         return (
-            metrics["trades"] >= 8
-            and metrics["pf"] > 1.00
-            and metrics["net_r"] > 0
+            m["trades"] >= 6
+            and m["pf"] >= 1.00
+            and m["net_r"] > 0
+            and m["max_dd"] < 20
         )
 
-    if period == "FULL":
-
-        return (
-            metrics["trades"] >= 30
-            and metrics["pf"] > 1.05
-            and metrics["net_r"] > 0
-            and metrics["max_dd"] < 35
-        )
-
-    return False
+    return (
+        m["trades"] >= 30
+        and m["pf"] >= 1.10
+        and m["net_r"] > 0
+        and m["max_dd"] < 30
+    )
 
 
-def print_summary(
-    label,
-    metrics
-):
+def show(label, m):
 
-    if metrics is None:
-
+    if m is None:
         print(
             f"{label} | NO TRADES"
         )
-
         return
 
     print(
         f"{label} | "
-        f'Trades:{metrics["trades"]} | '
-        f'WR:{metrics["win_rate"]:.2f}% | '
-        f'PF:{bt.pf_text(metrics["pf"])} | '
-        f'NetR:{metrics["net_r"]:.2f}R | '
-        f'AvgR:{metrics["avg_r"]:.3f}R | '
-        f'DD:{metrics["max_dd"]:.2f}%'
+        f"Trades:{m['trades']} | "
+        f"WR:{m['win_rate']:.2f}% | "
+        f"PF:{bt.pf_text(m['pf'])} | "
+        f"NetR:{m['net_r']:.2f}R | "
+        f"AvgR:{m['avg_r']:.3f}R | "
+        f"DD:{m['max_dd']:.2f}%"
     )
 
 
 # ============================================================
-# SHORT FILTERS
+# BEARISH REGIME
 # ============================================================
 
-def build_variants():
+def bearish_4h_strict(row):
+
+    return (
+        bt.trend4(row)
+        == "BEARISH"
+    )
+
+
+def bearish_4h_soft(row):
+
+    return (
+        row["close4"]
+        < row["ema200_4"]
+
+        and row["ema20_4"]
+        < row["ema50_4"]
+
+        and row["rsi_4"]
+        < 52
+    )
+
+
+# ============================================================
+# BTC MARKET FILTER
+# ============================================================
+
+def build_btc_regime_map(
+    btc_df
+):
+
+    output = {}
+
+    for i in range(
+        1,
+        len(btc_df)
+    ):
+
+        x = btc_df.iloc[i]
+
+        output[
+            x["signal_time"]
+        ] = {
+
+            "strict":
+                bearish_4h_strict(x),
+
+            "soft":
+                (
+                    bearish_4h_soft(x)
+
+                    and x["close"]
+                    < x["ema50"]
+
+                    and x["rsi"]
+                    < 55
+                )
+        }
+
+    return output
+
+
+# ============================================================
+# INDEPENDENT SHORT CANDIDATES
+# ============================================================
+
+def build_candidates(
+    symbol,
+    df,
+    btc_map
+):
+
+    rows = []
+
+    for i in range(
+        25,
+        len(df) - 1
+    ):
+
+        x = df.iloc[i]
+
+        p = df.iloc[
+            i - 1
+        ]
+
+        p2 = df.iloc[
+            i - 2
+        ]
+
+        market = btc_map.get(
+            x["signal_time"],
+            {
+                "strict": False,
+                "soft": False
+            }
+        )
+
+        own_strict = (
+            bearish_4h_strict(x)
+        )
+
+        own_soft = (
+            bearish_4h_soft(x)
+        )
+
+        prev20_low = float(
+            df.iloc[
+                i - 20:i
+            ]["low"].min()
+        )
+
+        # --------------------------------
+        # Pullback rejection from EMA20
+        # --------------------------------
+
+        ema20_reject = (
+
+            x["high"]
+            >= x["ema20"] * 0.998
+
+            and x["close"]
+            < x["ema20"]
+
+            and x["close"]
+            < x["open"]
+        )
+
+        # --------------------------------
+        # Pullback rejection from EMA50
+        # --------------------------------
+
+        ema50_reject = (
+
+            x["high"]
+            >= x["ema50"] * 0.998
+
+            and x["close"]
+            < x["ema50"]
+
+            and x["close"]
+            < x["open"]
+        )
+
+        # --------------------------------
+        # 20-hour breakdown
+        # --------------------------------
+
+        break20 = (
+
+            x["low"]
+            < prev20_low
+
+            and x["close"]
+            < prev20_low
+        )
+
+        # --------------------------------
+        # RSI rollover through 50
+        # --------------------------------
+
+        rsi_cross50 = (
+
+            p["rsi"] >= 50
+
+            and x["rsi"] < 50
+        )
+
+        # --------------------------------
+        # MACD bearish crossover
+        # --------------------------------
+
+        macd_crossdown = (
+
+            p["macd"]
+            >= p["macd_signal"]
+
+            and x["macd"]
+            < x["macd_signal"]
+        )
+
+        # --------------------------------
+        # Momentum worsening
+        # --------------------------------
+
+        hist_falling = (
+
+            x["macd_hist"]
+            < p["macd_hist"]
+
+            and p["macd_hist"]
+            <= p2["macd_hist"]
+        )
+
+        # --------------------------------
+        # Full 1H bearish EMA stack
+        # --------------------------------
+
+        trend_stack = (
+
+            x["close"]
+            < x["ema20"]
+
+            and x["ema20"]
+            < x["ema50"]
+
+            and x["ema50"]
+            < x["ema200"]
+        )
+
+        distance20 = (
+
+            abs(
+                x["close"]
+                - x["ema20"]
+            )
+
+            / x["close"]
+        )
+
+        # Broad universe only.
+        # This is NOT the old score>=9
+        # short candidate engine.
+
+        broad_bearish = (
+
+            (
+                own_soft
+                or market["soft"]
+            )
+
+            and x["close"]
+            < x["ema50"]
+
+            and 30
+            < x["rsi"]
+            < 60
+
+            and x["adx"]
+            >= 18
+        )
+
+        if not broad_bearish:
+            continue
+
+        entry, sl, _ = (
+            bt.levels(
+                df,
+                i,
+                "SHORT"
+            )
+        )
+
+        rows.append({
+
+            "symbol":
+                symbol,
+
+            "i":
+                i,
+
+            "time":
+                x["signal_time"],
+
+            "side":
+                "SHORT",
+
+            "score":
+                0,
+
+            "rsi":
+                float(
+                    x["rsi"]
+                ),
+
+            "adx":
+                float(
+                    x["adx"]
+                ),
+
+            "entry":
+                float(entry),
+
+            "sl":
+                float(sl),
+
+            "own_strict":
+                own_strict,
+
+            "own_soft":
+                own_soft,
+
+            "btc_strict":
+                bool(
+                    market["strict"]
+                ),
+
+            "btc_soft":
+                bool(
+                    market["soft"]
+                ),
+
+            "ema20_reject":
+                ema20_reject,
+
+            "ema50_reject":
+                ema50_reject,
+
+            "break20":
+                break20,
+
+            "rsi_cross50":
+                rsi_cross50,
+
+            "macd_crossdown":
+                macd_crossdown,
+
+            "hist_falling":
+                hist_falling,
+
+            "trend_stack":
+                trend_stack,
+
+            "macd_bear":
+                bool(
+                    x["macd"]
+                    < x["macd_signal"]
+                ),
+
+            "bear_candle":
+                bool(
+                    x["close"]
+                    < x["open"]
+                ),
+
+            "vol_ratio":
+                float(
+                    x["vol_ratio"]
+                ),
+
+            "distance20":
+                float(
+                    distance20
+                )
+        })
+
+    return rows
+
+
+# ============================================================
+# CUSTOM SHORT SIMULATOR
+# Tests 1.5R and 2R independently
+# ============================================================
+
+def simulate_target(
+    df,
+    trade,
+    target_r
+):
+
+    entry = trade[
+        "entry"
+    ]
+
+    sl = trade[
+        "sl"
+    ]
+
+    risk = (
+        sl - entry
+    )
+
+    if risk <= 0:
+
+        return (
+            0.0,
+            trade["i"],
+            "INVALID"
+        )
+
+    tp = (
+        entry
+        - target_r * risk
+    )
+
+    end_i = min(
+
+        trade["i"]
+        + bt.MAX_HOLD_HOURS,
+
+        len(df) - 1
+    )
+
+    raw_r = None
+
+    exit_i = end_i
+
+    reason = "TIME"
+
+    for j in range(
+
+        trade["i"] + 1,
+
+        end_i + 1
+    ):
+
+        bar = df.iloc[j]
+
+        hit_sl = (
+            bar["high"]
+            >= sl
+        )
+
+        hit_tp = (
+            bar["low"]
+            <= tp
+        )
+
+        # Conservative:
+        # if TP and SL occur
+        # inside same 1H candle,
+        # count SL first.
+
+        if hit_sl and hit_tp:
+
+            raw_r = -1.0
+
+            exit_i = j
+
+            reason = (
+                "SL-FIRST"
+            )
+
+            break
+
+        if hit_sl:
+
+            raw_r = -1.0
+
+            exit_i = j
+
+            reason = "SL"
+
+            break
+
+        if hit_tp:
+
+            raw_r = float(
+                target_r
+            )
+
+            exit_i = j
+
+            reason = (
+                f"TP{target_r:g}R"
+            )
+
+            break
+
+    if raw_r is None:
+
+        exit_price = float(
+            df.iloc[
+                end_i
+            ]["close"]
+        )
+
+        raw_r = (
+
+            entry
+            - exit_price
+
+        ) / risk
+
+    cost_r = (
+
+        entry
+        * bt.ROUND_TRIP_COST_PCT
+
+    ) / risk
+
+    net_r = (
+        raw_r
+        - cost_r
+    )
+
+    return (
+        float(net_r),
+        exit_i,
+        reason
+    )
+
+
+# ============================================================
+# RUN ONE STRATEGY
+# ============================================================
+
+def run_strategy(
+    candidates,
+    data,
+    condition,
+    target_r
+):
+
+    results = []
+
+    blocked_until = {}
+
+    for trade in candidates:
+
+        if not condition(
+            trade
+        ):
+
+            continue
+
+        symbol = trade[
+            "symbol"
+        ]
+
+        if (
+            trade["i"]
+            <= blocked_until.get(
+                symbol,
+                -1
+            )
+        ):
+
+            continue
+
+        (
+            r,
+            exit_i,
+            reason
+
+        ) = simulate_target(
+
+            data[symbol],
+
+            trade,
+
+            target_r
+        )
+
+        blocked_until[
+            symbol
+        ] = exit_i
+
+        results.append({
+
+            "symbol":
+                symbol,
+
+            "time":
+                trade["time"],
+
+            "side":
+                "SHORT",
+
+            "score":
+                0,
+
+            "rsi":
+                trade["rsi"],
+
+            "adx":
+                trade["adx"],
+
+            "r":
+                r,
+
+            "exit":
+                reason
+        })
+
+    return sorted(
+
+        results,
+
+        key=lambda row:
+            row["time"]
+    )
+
+
+# ============================================================
+# SHORT V2 SETUPS
+# ============================================================
+
+def strategy_list():
 
     return [
 
         (
-            "S1 - ALL BASE SHORTS",
+            "V2-A BTC+OWN BEAR / EMA20 REJECTION",
 
-            lambda t:
-                t["side"] == "SHORT"
+            lambda t: (
+
+                t["btc_soft"]
+
+                and t["own_strict"]
+
+                and t[
+                    "ema20_reject"
+                ]
+
+                and 40
+                <= t["rsi"]
+                <= 55
+
+                and t["adx"]
+                >= 25
+
+                and t[
+                    "macd_bear"
+                ]
+            )
         ),
 
         (
-            "S2 - SHORT + ADX >= 30",
+            "V2-B OWN BEAR / EMA50 REJECTION",
 
-            lambda t:
-                t["side"] == "SHORT"
-                and t["adx"] >= 30
+            lambda t: (
+
+                t["own_strict"]
+
+                and t[
+                    "ema50_reject"
+                ]
+
+                and 42
+                <= t["rsi"]
+                <= 58
+
+                and t["adx"]
+                >= 25
+
+                and t[
+                    "macd_bear"
+                ]
+            )
         ),
 
         (
-            "S3 - SHORT + ADX >= 40",
+            "V2-C BTC+OWN BEAR / 20H BREAKDOWN",
 
-            lambda t:
-                t["side"] == "SHORT"
-                and t["adx"] >= 40
+            lambda t: (
+
+                t["btc_soft"]
+
+                and t["own_soft"]
+
+                and t["break20"]
+
+                and 34
+                <= t["rsi"]
+                <= 50
+
+                and t["adx"]
+                >= 25
+
+                and t[
+                    "vol_ratio"
+                ]
+                >= 1.10
+            )
         ),
 
         (
-            "S4 - SHORT + RSI 30-45",
+            "V2-D STRONG TREND CONTINUATION",
 
-            lambda t:
-                t["side"] == "SHORT"
-                and 30 < t["rsi"] <= 45
+            lambda t: (
+
+                t["btc_soft"]
+
+                and t[
+                    "own_strict"
+                ]
+
+                and t[
+                    "trend_stack"
+                ]
+
+                and 35
+                <= t["rsi"]
+                <= 48
+
+                and t["adx"]
+                >= 35
+
+                and t[
+                    "hist_falling"
+                ]
+
+                and t[
+                    "distance20"
+                ]
+                <= 0.020
+            )
         ),
 
         (
-            "S5 - SHORT + ADX >= 30 + RSI 30-45",
+            "V2-E RSI50 ROLLOVER",
 
-            lambda t:
-                t["side"] == "SHORT"
-                and t["adx"] >= 30
-                and 30 < t["rsi"] <= 45
+            lambda t: (
+
+                t["btc_soft"]
+
+                and t[
+                    "own_strict"
+                ]
+
+                and t[
+                    "rsi_cross50"
+                ]
+
+                and t[
+                    "trend_stack"
+                ]
+
+                and t["adx"]
+                >= 25
+
+                and t[
+                    "macd_bear"
+                ]
+            )
         ),
 
         (
-            "S6 - SHORT + ADX >= 40 + RSI 30-45",
+            "V2-F MACD CROSSDOWN AFTER PULLBACK",
 
-            lambda t:
-                t["side"] == "SHORT"
-                and t["adx"] >= 40
-                and 30 < t["rsi"] <= 45
+            lambda t: (
+
+                t["btc_soft"]
+
+                and t[
+                    "own_strict"
+                ]
+
+                and t[
+                    "macd_crossdown"
+                ]
+
+                and 40
+                <= t["rsi"]
+                <= 56
+
+                and t["adx"]
+                >= 25
+
+                and t[
+                    "distance20"
+                ]
+                <= 0.025
+            )
         ),
 
         (
-            "S7 - SHORT + ADX >= 40 + RSI 30-45 + SCORE 9",
+            "V2-G STRICT EMA20 REJECTION",
 
-            lambda t:
-                t["side"] == "SHORT"
-                and t["adx"] >= 40
-                and 30 < t["rsi"] <= 45
-                and t["score"] == 9
+            lambda t: (
+
+                t[
+                    "btc_strict"
+                ]
+
+                and t[
+                    "own_strict"
+                ]
+
+                and t[
+                    "ema20_reject"
+                ]
+
+                and 42
+                <= t["rsi"]
+                <= 52
+
+                and t["adx"]
+                >= 30
+
+                and t[
+                    "vol_ratio"
+                ]
+                >= 0.90
+
+                and t[
+                    "macd_bear"
+                ]
+            )
         ),
 
         (
-            "S8 - SHORT + ADX >= 40 + RSI 30-45 + SCORE >=10",
+            "V2-H STRICT BREAKDOWN + VOLUME",
 
-            lambda t:
-                t["side"] == "SHORT"
-                and t["adx"] >= 40
-                and 30 < t["rsi"] <= 45
-                and t["score"] >= 10
-        ),
+            lambda t: (
 
-        (
-            "S9 - SHORT + ADX >= 35 + RSI 35-50",
+                t[
+                    "btc_strict"
+                ]
 
-            lambda t:
-                t["side"] == "SHORT"
-                and t["adx"] >= 35
-                and 35 <= t["rsi"] <= 50
-        ),
+                and t[
+                    "own_strict"
+                ]
 
-        (
-            "S10 - SHORT + ADX >= 40 + RSI 35-50 + SCORE 9",
+                and t["break20"]
 
-            lambda t:
-                t["side"] == "SHORT"
-                and t["adx"] >= 40
-                and 35 <= t["rsi"] <= 50
-                and t["score"] == 9
-        ),
+                and 35
+                <= t["rsi"]
+                <= 48
+
+                and t["adx"]
+                >= 30
+
+                and t[
+                    "vol_ratio"
+                ]
+                >= 1.25
+            )
+        )
     ]
 
 
@@ -187,14 +893,18 @@ def build_variants():
 
 def main():
 
-    print("=" * 80)
+    print(
+        "=" * 84
+    )
 
     print(
         "AI TRADE SCANNER - "
-        "SHORT FILTER DISCOVERY"
+        "SHORT V2 INDEPENDENT DISCOVERY"
     )
 
-    print("=" * 80)
+    print(
+        "=" * 84
+    )
 
     print(
         "Version:",
@@ -206,67 +916,74 @@ def main():
     )
 
     print(
-        "LONG robot: UNTOUCHED"
+        "LONG V3.0-E: UNTOUCHED"
     )
 
     print(
-        "Direction tested: SHORT ONLY"
+        "Candidate engine: "
+        "NEW / independent "
+        "from old SHORT score"
     )
 
     print(
-        "Validation:",
-        DAYS,
-        "days"
+        "Targets tested:",
+        TARGETS
     )
 
     print(
-        "Older holdout:",
-        DAYS - TEST_DAYS,
-        "days"
-    )
-
-    print(
-        "Recent test:",
-        TEST_DAYS,
-        "days"
-    )
-
-    print(
-        "Target: TP2"
-    )
-
-    print(
-        "Symbols:",
+        "Requested symbols:",
         len(bt.SYMBOLS)
     )
 
-    print()
-
-
-    # ========================================================
-    # LOAD DATA
-    # ========================================================
-
     data = {}
 
-    candidates = []
+    usable = []
 
-    usable_symbols = []
+    # BTC first because it is
+    # used as market regime.
 
-    for number, symbol in enumerate(
-        bt.SYMBOLS,
+    ordered_symbols = [
+
+        "BTC/USDT"
+
+    ] + [
+
+        symbol
+
+        for symbol
+        in bt.SYMBOLS
+
+        if symbol
+        != "BTC/USDT"
+    ]
+
+    for (
+        number,
+        symbol
+
+    ) in enumerate(
+
+        ordered_symbols,
+
         start=1
     ):
 
         print()
-        print("#" * 80)
 
         print(
-            f"[{number}/{len(bt.SYMBOLS)}] "
+            "#" * 84
+        )
+
+        print(
+
+            f"[{number}/"
+            f"{len(ordered_symbols)}] "
             f"LOADING {symbol}"
         )
 
-        print("#" * 80)
+        print(
+            "#" * 84
+        )
 
         try:
 
@@ -289,30 +1006,8 @@ def main():
                 symbol
             ] = df
 
-            usable_symbols.append(
+            usable.append(
                 symbol
-            )
-
-            found = bt.find_candidates(
-                symbol,
-                df
-            )
-
-            shorts = [
-                trade
-                for trade
-                in found
-                if trade["side"]
-                == "SHORT"
-            ]
-
-            candidates.extend(
-                shorts
-            )
-
-            print(
-                "SHORT candidates:",
-                len(shorts)
             )
 
         except Exception as error:
@@ -323,49 +1018,78 @@ def main():
                 error
             )
 
-
-    candidates.sort(
-        key=lambda x:
-            x["time"]
-    )
-
-
-    print()
-    print("=" * 80)
-
-    print(
-        "DATA DOWNLOAD FINISHED"
-    )
-
-    print("=" * 80)
-
-    print(
-        "Usable symbols:",
-        len(usable_symbols)
-    )
-
-    print(
-        "Total SHORT candidates:",
-        len(candidates)
-    )
-
-
-    if not candidates:
+    if (
+        "BTC/USDT"
+        not in data
+    ):
 
         print(
-            "NO SHORT CANDIDATES."
-        )
-
-        print(
-            "SHORT STRATEGY NOT APPROVED."
+            "BTC DATA MISSING - "
+            "CANNOT RUN V2 "
+            "MARKET REGIME TEST"
         )
 
         return
 
+    if len(usable) < 5:
 
-    # ========================================================
-    # COMMON DATES
-    # ========================================================
+        print(
+            "NOT ENOUGH "
+            "USABLE SYMBOLS"
+        )
+
+        return
+
+    btc_map = (
+        build_btc_regime_map(
+            data[
+                "BTC/USDT"
+            ]
+        )
+    )
+
+    candidates = []
+
+    for symbol in usable:
+
+        found = (
+            build_candidates(
+
+                symbol,
+
+                data[symbol],
+
+                btc_map
+            )
+        )
+
+        candidates.extend(
+            found
+        )
+
+        print(
+
+            symbol,
+
+            "broad SHORT "
+            "candidates:",
+
+            len(found)
+        )
+
+    candidates.sort(
+
+        key=lambda row:
+            row["time"]
+    )
+
+    if not candidates:
+
+        print(
+            "NO V2 SHORT CANDIDATES"
+        )
+
+        return
 
     validation_end = min(
 
@@ -375,39 +1099,35 @@ def main():
         ]
 
         for symbol
-        in usable_symbols
+        in usable
     )
-
 
     validation_start = (
 
         validation_end
 
         - pd.Timedelta(
-            days=DAYS
+            days=bt.DAYS
         )
     )
-
 
     recent_start = (
 
         validation_end
 
         - pd.Timedelta(
-            days=TEST_DAYS
+            days=RECENT_DAYS
         )
     )
-
 
     last30_start = (
 
         validation_end
 
         - pd.Timedelta(
-            days=30
+            days=LAST30_DAYS
         )
     )
-
 
     print()
 
@@ -421,272 +1141,303 @@ def main():
         validation_end
     )
 
-
-    # ========================================================
-    # TEST VARIANTS
-    # ========================================================
+    print(
+        "Total V2 broad "
+        "candidates:",
+        len(candidates)
+    )
 
     ranking = []
-
-    variants = build_variants()
-
 
     for (
         name,
         condition
-    ) in variants:
 
+    ) in strategy_list():
 
-        results = bt.run_variant(
-            candidates,
-            data,
-            condition
-        )
+        for target_r in TARGETS:
 
+            full_name = (
 
-        full_results = bt.slice_results(
-            results,
-            start=validation_start,
-            end=validation_end
-        )
-
-
-        older_results = bt.slice_results(
-            full_results,
-            end=recent_start
-        )
-
-
-        recent_results = bt.slice_results(
-            full_results,
-            start=recent_start
-        )
-
-
-        last30_results = bt.slice_results(
-            full_results,
-            start=last30_start
-        )
-
-
-        full_m = bt.calc_metrics(
-            full_results
-        )
-
-        older_m = bt.calc_metrics(
-            older_results
-        )
-
-        recent_m = bt.calc_metrics(
-            recent_results
-        )
-
-        last30_m = bt.calc_metrics(
-            last30_results
-        )
-
-
-        print()
-        print("#" * 80)
-
-        print(
-            name
-        )
-
-        print("#" * 80)
-
-
-        print_summary(
-            "OLDER",
-            older_m
-        )
-
-        print_summary(
-            "RECENT90",
-            recent_m
-        )
-
-        print_summary(
-            "LAST30",
-            last30_m
-        )
-
-        print_summary(
-            "FULL365",
-            full_m
-        )
-
-
-        older_pass = metrics_ok(
-            older_m,
-            "OLDER"
-        )
-
-        recent_pass = metrics_ok(
-            recent_m,
-            "RECENT"
-        )
-
-        full_pass = metrics_ok(
-            full_m,
-            "FULL"
-        )
-
-
-        robustness_score = sum([
-            older_pass,
-            recent_pass,
-            full_pass
-        ])
-
-
-        print()
-
-        print(
-            "ROBUSTNESS:",
-            f"{robustness_score}/3"
-        )
-
-
-        if (
-            older_pass
-            and recent_pass
-            and full_pass
-        ):
-
-            verdict = (
-                "STRONG PASS"
+                f"{name} | "
+                f"TARGET "
+                f"{target_r:g}R"
             )
 
-        elif robustness_score >= 2:
+            results = (
+                run_strategy(
 
-            verdict = (
-                "WATCH / POSSIBLE"
+                    candidates,
+
+                    data,
+
+                    condition,
+
+                    target_r
+                )
             )
 
-        else:
+            full_results = (
+                bt.slice_results(
 
-            verdict = (
-                "FAIL"
+                    results,
+
+                    start=
+                        validation_start,
+
+                    end=
+                        validation_end
+                )
             )
 
+            older_results = (
+                bt.slice_results(
 
-        print(
-            "VERDICT:",
-            verdict
-        )
+                    full_results,
 
+                    end=
+                        recent_start
+                )
+            )
 
-        ranking.append({
+            recent_results = (
+                bt.slice_results(
 
-            "name":
-                name,
+                    full_results,
 
-            "robustness":
-                robustness_score,
+                    start=
+                        recent_start
+                )
+            )
 
-            "verdict":
-                verdict,
+            last30_results = (
+                bt.slice_results(
 
-            "older":
-                older_m,
+                    full_results,
 
-            "recent":
-                recent_m,
+                    start=
+                        last30_start
+                )
+            )
 
-            "last30":
-                last30_m,
+            older = (
+                bt.calc_metrics(
+                    older_results
+                )
+            )
 
-            "full":
-                full_m,
-        })
+            recent = (
+                bt.calc_metrics(
+                    recent_results
+                )
+            )
 
+            last30 = (
+                bt.calc_metrics(
+                    last30_results
+                )
+            )
 
-    # ========================================================
-    # FINAL RANKING
-    # ========================================================
+            full = (
+                bt.calc_metrics(
+                    full_results
+                )
+            )
 
-    def ranking_key(
-        row
-    ):
+            older_ok = (
+                metric_pass(
+                    older,
+                    "OLDER"
+                )
+            )
 
-        older = row[
-            "older"
-        ]
+            recent_ok = (
+                metric_pass(
+                    recent,
+                    "RECENT"
+                )
+            )
 
-        recent = row[
-            "recent"
-        ]
+            full_ok = (
+                metric_pass(
+                    full,
+                    "FULL"
+                )
+            )
 
-        full = row[
-            "full"
-        ]
+            robustness = sum(
+                (
+                    older_ok,
+                    recent_ok,
+                    full_ok
+                )
+            )
 
+            print()
 
-        older_net = (
-            older["net_r"]
-            if older
-            else -999
-        )
+            print(
+                "=" * 84
+            )
 
+            print(
+                full_name
+            )
 
-        recent_net = (
-            recent["net_r"]
-            if recent
-            else -999
-        )
+            print(
+                "=" * 84
+            )
 
+            show(
+                "OLDER275",
+                older
+            )
 
-        full_net = (
-            full["net_r"]
-            if full
-            else -999
-        )
+            show(
+                "RECENT90",
+                recent
+            )
 
+            show(
+                "LAST30",
+                last30
+            )
 
-        return (
+            show(
+                "FULL365",
+                full
+            )
 
-            row[
-                "robustness"
-            ],
+            print(
+                "ROBUSTNESS:",
+                f"{robustness}/3"
+            )
 
-            older_net,
+            if robustness == 3:
 
-            recent_net,
+                verdict = (
+                    "STRONG PASS"
+                )
 
-            full_net
-        )
+            elif robustness == 2:
 
+                verdict = (
+                    "WATCH"
+                )
+
+            else:
+
+                verdict = (
+                    "FAIL"
+                )
+
+            print(
+                "VERDICT:",
+                verdict
+            )
+
+            ranking.append({
+
+                "name":
+                    full_name,
+
+                "robustness":
+                    robustness,
+
+                "older_ok":
+                    older_ok,
+
+                "recent_ok":
+                    recent_ok,
+
+                "full_ok":
+                    full_ok,
+
+                "older":
+                    older,
+
+                "recent":
+                    recent,
+
+                "last30":
+                    last30,
+
+                "full":
+                    full
+            })
+
+    def safe_pf(m):
+
+        if m is None:
+            return -999
+
+        return m["pf"]
+
+    def safe_net(m):
+
+        if m is None:
+            return -999
+
+        return m["net_r"]
 
     ranking.sort(
-        key=ranking_key,
+
+        key=lambda row: (
+
+            row["older_ok"],
+
+            row["robustness"],
+
+            min(
+                safe_pf(
+                    row["older"]
+                ),
+                safe_pf(
+                    row["recent"]
+                ),
+                safe_pf(
+                    row["full"]
+                )
+            ),
+
+            safe_net(
+                row["full"]
+            )
+        ),
+
         reverse=True
     )
 
-
     print()
-    print("=" * 80)
 
     print(
-        "FINAL SHORT RANKING"
+        "#" * 84
     )
 
     print(
-        "OLDER HOLDOUT HAS PRIORITY"
+        "FINAL SHORT V2 RANKING "
+        "- OLDER HOLDOUT FIRST"
     )
 
-    print("=" * 80)
+    print(
+        "#" * 84
+    )
 
+    for (
+        position,
+        row
 
-    for position, row in enumerate(
-        ranking,
+    ) in enumerate(
+
+        ranking[:8],
+
         start=1
     ):
 
-
         print()
+
         print(
-            f"RANK {position}"
+            "RANK",
+            position
         )
 
         print(
@@ -694,125 +1445,113 @@ def main():
         )
 
         print(
-            "VERDICT:",
-            row["verdict"]
-        )
-
-        print(
             "ROBUSTNESS:",
             f'{row["robustness"]}/3'
         )
 
-
-        print_summary(
-            "OLDER",
+        show(
+            "OLDER275",
             row["older"]
         )
 
-        print_summary(
+        show(
             "RECENT90",
             row["recent"]
         )
 
-        print_summary(
+        show(
             "LAST30",
             row["last30"]
         )
 
-        print_summary(
+        show(
             "FULL365",
             row["full"]
         )
 
-
-    # ========================================================
-    # DECISION
-    # ========================================================
-
-    strong = [
+    approved = [
 
         row
 
         for row
         in ranking
 
-        if row["verdict"]
-        == "STRONG PASS"
+        if row["robustness"]
+        == 3
     ]
 
-
     print()
-    print("=" * 80)
 
     print(
-        "FINAL SHORT DECISION"
+        "#" * 84
     )
 
-    print("=" * 80)
+    print(
+        "FINAL SHORT V2 DECISION"
+    )
 
+    print(
+        "#" * 84
+    )
 
-    if strong:
+    if approved:
 
-        winner = strong[0]
+        winner = (
+            approved[0]
+        )
 
         print(
-            "SHORT FILTER APPROVED:"
+            "SHORT V2 APPROVED:"
         )
 
         print(
             winner["name"]
         )
 
-        print()
-
         print(
-            "This filter was positive "
-            "in older, recent and "
-            "full validation."
-        )
-
-        print()
-
-        print(
-            "NEXT STEP:"
+            "Passed OLDER275 + "
+            "RECENT90 + FULL365 "
+            "checks."
         )
 
         print(
-            "Add this SHORT engine "
-            "next to the existing "
-            "LONG V3.0-E engine."
+            "NEXT STEP: add ONLY "
+            "this SHORT engine "
+            "next to LONG V3.0-E."
         )
 
     else:
 
         print(
-            "NO SHORT FILTER PASSED "
-            "ALL ROBUSTNESS CHECKS."
+            "NO SHORT V2 SETUP "
+            "PASSED ALL "
+            "ROBUSTNESS CHECKS."
         )
-
-        print()
 
         print(
-            "Do NOT add SHORT to "
-            "main.py yet."
+            "Do NOT add SHORT "
+            "to main.py."
         )
-
-        print()
 
         print(
             "LONG V3.0-E remains "
             "unchanged and active."
         )
 
-
     print()
-    print("=" * 80)
 
     print(
-        "SHORT BACKTEST COMPLETED"
+        "=" * 84
     )
 
-    print("=" * 80)
+    print(
+        "SHORT V2 BACKTEST "
+        "COMPLETED"
+    )
+
+    print(
+        "=" * 84
+    )
 
 
 if __name__ == "__main__":
