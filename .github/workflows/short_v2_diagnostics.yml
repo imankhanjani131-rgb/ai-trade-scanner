@@ -1,0 +1,24 @@
+name: SHORT V2 Diagnostics
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install ccxt pandas ta requests
+
+      - name: Run SHORT V2 diagnostics
+        run: python short_v2_diagnostics.py
