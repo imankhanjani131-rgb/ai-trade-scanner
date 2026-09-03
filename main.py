@@ -38,8 +38,13 @@ SYMBOLS = [
 
 TIMEFRAME = "15m"
 
-exchange = ccxt.binance({
-    "enableRateLimit": True
+
+# =========================
+# EXCHANGE - TOOBIT
+# =========================
+
+exchange = ccxt.toobit({
+    "enableRateLimit": True,
 })
 
 
@@ -48,41 +53,74 @@ exchange = ccxt.binance({
 # =========================
 
 def send_telegram_message(message):
-    if not TELEGRAM_BOT_TOKEN:
-        print("Telegram token not found.")
+    token = (TELEGRAM_BOT_TOKEN or "").strip()
+
+    if token.lower().startswith("bot"):
+        token = token[3:].strip()
+
+    print("Telegram token loaded:", bool(token))
+    print("Telegram token length:", len(token))
+    print("Telegram token has colon:", ":" in token)
+
+    if not token:
+        print("Telegram token is missing")
         return False
 
-    url = (
-        f"https://api.telegram.org/"
-        f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    )
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML",
-    }
-
     try:
+        # First test the bot token
+        test_url = f"https://api.telegram.org/bot{token}/getMe"
+
+        test_response = requests.get(
+            test_url,
+            timeout=15,
+        )
+
+        print(
+            "Telegram getMe status:",
+            test_response.status_code,
+        )
+
+        print(
+            "Telegram getMe response:",
+            test_response.text,
+        )
+
+        if test_response.status_code != 200:
+            return False
+
+        # Send message
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML",
+        }
+
         response = requests.post(
             url,
             json=payload,
-            timeout=10,
+            timeout=15,
         )
 
-        if response.status_code != 200:
-            print(
-                "Telegram error:",
-                response.status_code,
-                response.text,
-            )
-            return False
+        print(
+            "Telegram sendMessage status:",
+            response.status_code,
+        )
 
-        print("Telegram message sent successfully.")
-        return True
+        print(
+            "Telegram sendMessage response:",
+            response.text,
+        )
+
+        if response.status_code == 200:
+            print("Telegram message sent successfully.")
+            return True
+
+        return False
 
     except Exception as error:
-        print("Telegram send error:", error)
+        print("Telegram request error:", error)
         return False
 
 
@@ -92,6 +130,13 @@ def send_telegram_message(message):
 
 def fetch_data(symbol):
     try:
+        if not exchange.markets:
+            exchange.load_markets()
+
+        if symbol not in exchange.markets:
+            print(f"{symbol} is not available on Toobit.")
+            return None
+
         ohlcv = exchange.fetch_ohlcv(
             symbol,
             timeframe=TIMEFRAME,
@@ -113,7 +158,9 @@ def fetch_data(symbol):
         return df
 
     except Exception as error:
-        print(f"Fetch error for {symbol}: {error}")
+        print(
+            f"Fetch error for {symbol}: {error}"
+        )
         return None
 
 
@@ -142,7 +189,9 @@ def analyze_symbol(symbol):
         window=50,
     ).ema_indicator()
 
-    macd = ta.trend.MACD(df["close"])
+    macd = ta.trend.MACD(
+        df["close"]
+    )
 
     df["macd"] = macd.macd()
     df["macd_signal"] = macd.macd_signal()
@@ -174,13 +223,19 @@ def analyze_symbol(symbol):
         and prev["macd"] >= prev["macd_signal"]
     )
 
+    print(
+        f"{symbol} | "
+        f"Price: {price} | "
+        f"RSI: {curr['rsi']:.2f}"
+    )
+
     if buy_condition:
         stop_loss = price - (1.5 * atr)
         take_profit = price + (3.0 * atr)
 
         message = (
             f"🟢 <b>BUY SIGNAL</b>\n\n"
-            f"🔹 <b>Pair:</b> #{symbol.replace('/USDT', '')}\n"
+            f"🔹 <b>Pair:</b> {symbol}\n"
             f"⏱ <b>Timeframe:</b> {TIMEFRAME}\n"
             f"💵 <b>Entry:</b> {price:,.4f}\n"
             f"🛑 <b>SL:</b> {stop_loss:,.4f}\n"
@@ -197,7 +252,7 @@ def analyze_symbol(symbol):
 
         message = (
             f"🔴 <b>SELL SIGNAL</b>\n\n"
-            f"🔹 <b>Pair:</b> #{symbol.replace('/USDT', '')}\n"
+            f"🔹 <b>Pair:</b> {symbol}\n"
             f"⏱ <b>Timeframe:</b> {TIMEFRAME}\n"
             f"💵 <b>Entry:</b> {price:,.4f}\n"
             f"🛑 <b>SL:</b> {stop_loss:,.4f}\n"
@@ -216,18 +271,37 @@ def analyze_symbol(symbol):
 def main():
     print("AI Trade Scanner started")
 
-    # Telegram connection test
+    # Test Telegram first
     send_telegram_message(
         "✅ AI Trade Scanner Telegram test successful"
     )
 
+    print("Connecting to Toobit...")
+
+    try:
+        exchange.load_markets()
+        print(
+            "Toobit connected successfully."
+        )
+    except Exception as error:
+        print(
+            "Toobit connection error:",
+            error,
+        )
+        return
+
     for symbol in SYMBOLS:
         try:
-            print(f"Scanning {symbol}...")
+            print(
+                f"Scanning {symbol}..."
+            )
+
             analyze_symbol(symbol)
 
         except Exception as error:
-            print(f"Error scanning {symbol}: {error}")
+            print(
+                f"Error scanning {symbol}: {error}"
+            )
 
         time.sleep(0.5)
 
