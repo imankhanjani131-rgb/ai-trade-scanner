@@ -11,7 +11,6 @@ import ta
 # =========================
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = "6175027599"
 
 SYMBOLS = [
     "BTC/USDT",
@@ -52,47 +51,120 @@ exchange = ccxt.toobit({
 # TELEGRAM
 # =========================
 
-def send_telegram_message(message):
+def clean_token():
     token = (TELEGRAM_BOT_TOKEN or "").strip()
 
     if token.lower().startswith("bot"):
         token = token[3:].strip()
 
-    print("Telegram token loaded:", bool(token))
-    print("Telegram token length:", len(token))
-    print("Telegram token has colon:", ":" in token)
+    return token
+
+
+def get_telegram_chat_id():
+    token = clean_token()
 
     if not token:
         print("Telegram token is missing")
+        return None
+
+    try:
+        url = f"https://api.telegram.org/bot{token}/getUpdates"
+
+        response = requests.get(
+            url,
+            timeout=15,
+        )
+
+        print(
+            "Telegram getUpdates status:",
+            response.status_code,
+        )
+
+        if response.status_code != 200:
+            print(response.text)
+            return None
+
+        data = response.json()
+
+        if not data.get("ok"):
+            print(data)
+            return None
+
+        updates = data.get("result", [])
+
+        for update in reversed(updates):
+            message = update.get("message")
+
+            if message and message.get("chat"):
+                chat_id = message["chat"]["id"]
+
+                print(
+                    "Telegram chat found successfully."
+                )
+
+                return str(chat_id)
+
+        print(
+            "No Telegram chat found. Send /start to the bot."
+        )
+
+        return None
+
+    except Exception as error:
+        print(
+            "Telegram getUpdates error:",
+            error,
+        )
+
+        return None
+
+
+def send_telegram_message(message):
+    token = clean_token()
+
+    print(
+        "Telegram token loaded:",
+        bool(token),
+    )
+
+    if not token:
         return False
 
     try:
-        # First test the bot token
-        test_url = f"https://api.telegram.org/bot{token}/getMe"
+        # Check bot token
+        get_me_url = (
+            f"https://api.telegram.org/"
+            f"bot{token}/getMe"
+        )
 
-        test_response = requests.get(
-            test_url,
+        get_me = requests.get(
+            get_me_url,
             timeout=15,
         )
 
         print(
             "Telegram getMe status:",
-            test_response.status_code,
+            get_me.status_code,
         )
 
-        print(
-            "Telegram getMe response:",
-            test_response.text,
-        )
-
-        if test_response.status_code != 200:
+        if get_me.status_code != 200:
+            print(get_me.text)
             return False
 
-        # Send message
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        # Automatically detect correct chat ID
+        chat_id = get_telegram_chat_id()
+
+        if not chat_id:
+            return False
+
+        # Send Telegram message
+        url = (
+            f"https://api.telegram.org/"
+            f"bot{token}/sendMessage"
+        )
 
         payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
+            "chat_id": chat_id,
             "text": message,
             "parse_mode": "HTML",
         }
@@ -114,13 +186,20 @@ def send_telegram_message(message):
         )
 
         if response.status_code == 200:
-            print("Telegram message sent successfully.")
+            print(
+                "Telegram message sent successfully."
+            )
+
             return True
 
         return False
 
     except Exception as error:
-        print("Telegram request error:", error)
+        print(
+            "Telegram request error:",
+            error,
+        )
+
         return False
 
 
@@ -134,7 +213,10 @@ def fetch_data(symbol):
             exchange.load_markets()
 
         if symbol not in exchange.markets:
-            print(f"{symbol} is not available on Toobit.")
+            print(
+                f"{symbol} is not available on Toobit."
+            )
+
             return None
 
         ohlcv = exchange.fetch_ohlcv(
@@ -161,6 +243,7 @@ def fetch_data(symbol):
         print(
             f"Fetch error for {symbol}: {error}"
         )
+
         return None
 
 
@@ -265,29 +348,32 @@ def analyze_symbol(symbol):
 
 
 # =========================
-# RUN ONE SCAN
+# MAIN
 # =========================
 
 def main():
     print("AI Trade Scanner started")
 
-    # Test Telegram first
+    # Telegram connection test
     send_telegram_message(
-        "✅ AI Trade Scanner Telegram test successful"
+        "✅ AI Trade Scanner is connected successfully."
     )
 
     print("Connecting to Toobit...")
 
     try:
         exchange.load_markets()
+
         print(
             "Toobit connected successfully."
         )
+
     except Exception as error:
         print(
             "Toobit connection error:",
             error,
         )
+
         return
 
     for symbol in SYMBOLS:
