@@ -26,6 +26,14 @@ jobs:
           restore-keys: |
             signal-state-
 
+      - name: Restore forward test state
+        uses: actions/cache@v4
+        with:
+          path: forward_test.json
+          key: forward-test-${{ github.run_id }}
+          restore-keys: |
+            forward-test-
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
