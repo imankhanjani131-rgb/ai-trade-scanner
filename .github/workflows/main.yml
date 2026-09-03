@@ -3,11 +3,12 @@ name: AI Trade Scanner
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "5 * * * *"
 
 jobs:
   run-scanner:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
