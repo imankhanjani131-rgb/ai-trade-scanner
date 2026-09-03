@@ -6,9 +6,12 @@ import pandas as pd
 import ta
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
 ENTRY_TF = "1h"
 TREND_TF = "4h"
-MIN_SCORE = 8
+
+MIN_SCORE = 9
+MIN_ADX = 22
 
 SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT",
@@ -26,8 +29,10 @@ exchange = ccxt.toobit({
 
 def clean_token():
     token = (TOKEN or "").strip()
+
     if token.lower().startswith("bot"):
         token = token[3:].strip()
+
     return token
 
 
@@ -40,21 +45,43 @@ def get_chat_id():
 
     try:
         url = f"https://api.telegram.org/bot{token}/getUpdates"
-        r = requests.get(url, timeout=15)
 
-        if r.status_code != 200:
-            print("getUpdates error:", r.text)
+        response = requests.get(
+            url,
+            timeout=15
+        )
+
+        if response.status_code != 200:
+            print(
+                "Telegram getUpdates error:",
+                response.text
+            )
             return None
 
-        for update in reversed(r.json().get("result", [])):
-            message = update.get("message", {})
-            chat = message.get("chat", {})
+        updates = response.json().get(
+            "result",
+            []
+        )
+
+        for update in reversed(updates):
+            message = update.get(
+                "message",
+                {}
+            )
+
+            chat = message.get(
+                "chat",
+                {}
+            )
 
             if chat.get("id") is not None:
                 return str(chat["id"])
 
-    except Exception as e:
-        print("Chat ID error:", e)
+    except Exception as error:
+        print(
+            "Chat ID error:",
+            error
+        )
 
     return None
 
@@ -64,13 +91,18 @@ def send_message(text):
     chat_id = get_chat_id()
 
     if not token or not chat_id:
-        print("Telegram connection unavailable")
-        return
+        print(
+            "Telegram connection unavailable"
+        )
+        return False
 
     try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        url = (
+            f"https://api.telegram.org/"
+            f"bot{token}/sendMessage"
+        )
 
-        r = requests.post(
+        response = requests.post(
             url,
             json={
                 "chat_id": chat_id,
@@ -80,10 +112,19 @@ def send_message(text):
             timeout=15
         )
 
-        print("Telegram status:", r.status_code)
+        print(
+            "Telegram status:",
+            response.status_code
+        )
 
-    except Exception as e:
-        print("Telegram error:", e)
+        return response.status_code == 200
+
+    except Exception as error:
+        print(
+            "Telegram error:",
+            error
+        )
+        return False
 
 
 def fetch_data(symbol, timeframe):
@@ -97,8 +138,12 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame(
             candles,
             columns=[
-                "timestamp", "open", "high",
-                "low", "close", "volume"
+                "timestamp",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume"
             ]
         )
 
@@ -110,8 +155,11 @@ def fetch_data(symbol, timeframe):
 
         return df
 
-    except Exception as e:
-        print(f"Fetch error {symbol} {timeframe}: {e}")
+    except Exception as error:
+        print(
+            f"Fetch error {symbol} "
+            f"{timeframe}: {error}"
+        )
         return None
 
 
@@ -122,33 +170,45 @@ def indicators(df):
     df = df.copy()
 
     df["ema20"] = ta.trend.EMAIndicator(
-        df["close"], 20
+        df["close"],
+        20
     ).ema_indicator()
 
     df["ema50"] = ta.trend.EMAIndicator(
-        df["close"], 50
+        df["close"],
+        50
     ).ema_indicator()
 
     df["ema200"] = ta.trend.EMAIndicator(
-        df["close"], 200
+        df["close"],
+        200
     ).ema_indicator()
 
     df["rsi"] = ta.momentum.RSIIndicator(
-        df["close"], 14
-    ).rsi()
-
-    macd = ta.trend.MACD(df["close"])
-
-    df["macd"] = macd.macd()
-    df["macd_signal"] = macd.macd_signal()
-    df["macd_hist"] = macd.macd_diff()
-
-    df["atr"] = ta.volatility.AverageTrueRange(
-        df["high"],
-        df["low"],
         df["close"],
         14
-    ).average_true_range()
+    ).rsi()
+
+    macd = ta.trend.MACD(
+        df["close"]
+    )
+
+    df["macd"] = macd.macd()
+    df["macd_signal"] = (
+        macd.macd_signal()
+    )
+    df["macd_hist"] = (
+        macd.macd_diff()
+    )
+
+    df["atr"] = (
+        ta.volatility.AverageTrueRange(
+            df["high"],
+            df["low"],
+            df["close"],
+            14
+        ).average_true_range()
+    )
 
     df["adx"] = ta.trend.ADXIndicator(
         df["high"],
@@ -157,10 +217,21 @@ def indicators(df):
         14
     ).adx()
 
-    df["vol_ma"] = df["volume"].rolling(20).mean()
-    df["vol_ratio"] = df["volume"] / df["vol_ma"]
+    df["vol_ma"] = (
+        df["volume"]
+        .rolling(20)
+        .mean()
+    )
 
-    return df.dropna().reset_index(drop=True)
+    df["vol_ratio"] = (
+        df["volume"] /
+        df["vol_ma"]
+    )
+
+    return (
+        df.dropna()
+        .reset_index(drop=True)
+    )
 
 
 def trend_4h(df):
@@ -168,14 +239,16 @@ def trend_4h(df):
 
     if (
         x["close"] > x["ema200"]
-        and x["ema20"] > x["ema50"] > x["ema200"]
+        and x["ema20"] > x["ema50"]
+        and x["ema50"] > x["ema200"]
         and x["rsi"] >= 50
     ):
         return "BULLISH"
 
     if (
         x["close"] < x["ema200"]
-        and x["ema20"] < x["ema50"] < x["ema200"]
+        and x["ema20"] < x["ema50"]
+        and x["ema50"] < x["ema200"]
         and x["rsi"] <= 50
     ):
         return "BEARISH"
@@ -183,44 +256,128 @@ def trend_4h(df):
     return "NEUTRAL"
 
 
-def score_signal(df1, df4, side):
+def score_signal(
+    df1,
+    df4,
+    side
+):
     x = df1.iloc[-2]
-    p = df1.iloc[-3]
+    previous = df1.iloc[-3]
+
     trend = trend_4h(df4)
 
     score = 0
     reasons = []
 
     if side == "LONG":
+
         tests = [
-            (trend == "BULLISH", 3, "4H bullish"),
-            (x["close"] > x["ema50"], 1, "Above EMA50"),
-            (x["ema20"] > x["ema50"], 1, "EMA bullish"),
-            (45 <= x["rsi"] <= 68, 1, f"RSI {x['rsi']:.1f}"),
-            (x["macd"] > x["macd_signal"], 1, "MACD bullish"),
-            (x["macd_hist"] > p["macd_hist"], 1, "Momentum rising"),
-            (x["adx"] >= 18, 1, f"ADX {x['adx']:.1f}"),
-            (x["vol_ratio"] >= 0.8, 1, "Volume confirmed")
+            (
+                trend == "BULLISH",
+                3,
+                "4H bullish"
+            ),
+            (
+                x["close"] > x["ema50"],
+                1,
+                "Above EMA50"
+            ),
+            (
+                x["ema20"] > x["ema50"],
+                1,
+                "EMA bullish"
+            ),
+            (
+                45 <= x["rsi"] < 70,
+                1,
+                f"RSI {x['rsi']:.1f}"
+            ),
+            (
+                x["macd"] >
+                x["macd_signal"],
+                1,
+                "MACD bullish"
+            ),
+            (
+                x["macd_hist"] >
+                previous["macd_hist"],
+                1,
+                "Momentum rising"
+            ),
+            (
+                x["adx"] >= MIN_ADX,
+                1,
+                f"ADX {x['adx']:.1f}"
+            ),
+            (
+                x["vol_ratio"] >= 0.8,
+                1,
+                "Volume confirmed"
+            )
         ]
 
     else:
+
         tests = [
-            (trend == "BEARISH", 3, "4H bearish"),
-            (x["close"] < x["ema50"], 1, "Below EMA50"),
-            (x["ema20"] < x["ema50"], 1, "EMA bearish"),
-            (32 <= x["rsi"] <= 55, 1, f"RSI {x['rsi']:.1f}"),
-            (x["macd"] < x["macd_signal"], 1, "MACD bearish"),
-            (x["macd_hist"] < p["macd_hist"], 1, "Momentum falling"),
-            (x["adx"] >= 18, 1, f"ADX {x['adx']:.1f}"),
-            (x["vol_ratio"] >= 0.8, 1, "Volume confirmed")
+            (
+                trend == "BEARISH",
+                3,
+                "4H bearish"
+            ),
+            (
+                x["close"] < x["ema50"],
+                1,
+                "Below EMA50"
+            ),
+            (
+                x["ema20"] < x["ema50"],
+                1,
+                "EMA bearish"
+            ),
+            (
+                30 < x["rsi"] <= 55,
+                1,
+                f"RSI {x['rsi']:.1f}"
+            ),
+            (
+                x["macd"] <
+                x["macd_signal"],
+                1,
+                "MACD bearish"
+            ),
+            (
+                x["macd_hist"] <
+                previous["macd_hist"],
+                1,
+                "Momentum falling"
+            ),
+            (
+                x["adx"] >= MIN_ADX,
+                1,
+                f"ADX {x['adx']:.1f}"
+            ),
+            (
+                x["vol_ratio"] >= 0.8,
+                1,
+                "Volume confirmed"
+            )
         ]
 
-    distance = abs(x["close"] - x["ema20"]) / x["close"]
+    distance = abs(
+        x["close"] - x["ema20"]
+    ) / x["close"]
 
     if distance <= 0.015:
-        tests.append((True, 1, "EMA20 pullback"))
+        tests.append(
+            (
+                True,
+                1,
+                "EMA20 pullback"
+            )
+        )
 
     for ok, points, reason in tests:
+
         if ok:
             score += points
             reasons.append(reason)
@@ -230,42 +387,107 @@ def score_signal(df1, df4, side):
 
 def levels(df, side):
     x = df.iloc[-2]
-    entry = float(x["close"])
-    atr = float(x["atr"])
+
+    entry = float(
+        x["close"]
+    )
+
+    atr = float(
+        x["atr"]
+    )
+
     recent = df.iloc[-12:-1]
 
     if side == "LONG":
-        swing = float(recent["low"].min())
-        sl = min(entry - 1.5 * atr, swing - 0.2 * atr)
+
+        swing_low = float(
+            recent["low"].min()
+        )
+
+        sl = min(
+            entry - (1.5 * atr),
+            swing_low - (0.2 * atr)
+        )
+
         risk = entry - sl
-        return entry, sl, entry + risk, entry + 2*risk, entry + 3*risk
 
-    swing = float(recent["high"].max())
-    sl = max(entry + 1.5 * atr, swing + 0.2 * atr)
-    risk = sl - entry
+        tp1 = entry + risk
+        tp2 = entry + (2 * risk)
+        tp3 = entry + (3 * risk)
 
-    return entry, sl, entry - risk, entry - 2*risk, entry - 3*risk
+    else:
+
+        swing_high = float(
+            recent["high"].max()
+        )
+
+        sl = max(
+            entry + (1.5 * atr),
+            swing_high + (0.2 * atr)
+        )
+
+        risk = sl - entry
+
+        tp1 = entry - risk
+        tp2 = entry - (2 * risk)
+        tp3 = entry - (3 * risk)
+
+    return (
+        entry,
+        sl,
+        tp1,
+        tp2,
+        tp3
+    )
 
 
-def send_signal(symbol, side, score, reasons, df):
-    entry, sl, tp1, tp2, tp3 = levels(df, side)
+def send_signal(
+    symbol,
+    side,
+    score,
+    reasons,
+    df
+):
+    (
+        entry,
+        sl,
+        tp1,
+        tp2,
+        tp3
+    ) = levels(
+        df,
+        side
+    )
+
     x = df.iloc[-2]
 
-    icon = "🟢" if side == "LONG" else "🔴"
-    reason_text = "\n".join("• " + r for r in reasons)
+    icon = (
+        "🟢"
+        if side == "LONG"
+        else "🔴"
+    )
+
+    reason_text = "\n".join(
+        "• " + reason
+        for reason in reasons
+    )
 
     message = (
         f"{icon} <b>{side} SIGNAL</b>\n\n"
         f"💎 <b>{symbol}</b>\n"
         f"⏱ 1H entry / 4H trend\n\n"
+
         f"💵 Entry: {entry:.6f}\n"
         f"🛑 SL: {sl:.6f}\n"
+
         f"🎯 TP1: {tp1:.6f}\n"
         f"🎯 TP2: {tp2:.6f}\n"
         f"🎯 TP3: {tp3:.6f}\n\n"
+
         f"⭐ Score: {score}/11\n"
         f"📊 RSI: {x['rsi']:.1f}\n"
         f"📏 ADX: {x['adx']:.1f}\n\n"
+
         f"{reason_text}"
     )
 
@@ -273,65 +495,183 @@ def send_signal(symbol, side, score, reasons, df):
 
 
 def analyze(symbol):
-    print(f"Scanning {symbol}...")
+    print(
+        f"Scanning {symbol}..."
+    )
 
-    df1 = indicators(fetch_data(symbol, ENTRY_TF))
-    df4 = indicators(fetch_data(symbol, TREND_TF))
+    df1 = indicators(
+        fetch_data(
+            symbol,
+            ENTRY_TF
+        )
+    )
+
+    df4 = indicators(
+        fetch_data(
+            symbol,
+            TREND_TF
+        )
+    )
 
     if df1 is None or df4 is None:
-        print("Not enough data:", symbol)
+        print(
+            "Not enough data:",
+            symbol
+        )
         return
 
     trend = trend_4h(df4)
-    long_score, long_reasons = score_signal(df1, df4, "LONG")
-    short_score, short_reasons = score_signal(df1, df4, "SHORT")
+
+    x = df1.iloc[-2]
+
+    print(
+        f"{symbol} | "
+        f"RSI: {x['rsi']:.1f} | "
+        f"ADX: {x['adx']:.1f} | "
+        f"Trend: {trend}"
+    )
+
+    if (
+        trend == "BULLISH"
+        and x["rsi"] >= 70
+    ):
+        print(
+            "LONG rejected: RSI too high"
+        )
+        return
+
+    if (
+        trend == "BEARISH"
+        and x["rsi"] <= 30
+    ):
+        print(
+            "SHORT rejected: RSI too low"
+        )
+        return
+
+    if (
+        trend in [
+            "BULLISH",
+            "BEARISH"
+        ]
+        and x["adx"] < MIN_ADX
+    ):
+        print(
+            "Signal rejected: ADX too weak"
+        )
+        return
+
+    long_score, long_reasons = (
+        score_signal(
+            df1,
+            df4,
+            "LONG"
+        )
+    )
+
+    short_score, short_reasons = (
+        score_signal(
+            df1,
+            df4,
+            "SHORT"
+        )
+    )
 
     print(
         symbol,
-        "| Trend:", trend,
-        "| LONG:", long_score,
-        "| SHORT:", short_score
+        "| LONG:",
+        long_score,
+        "| SHORT:",
+        short_score
     )
 
-    if trend == "BULLISH" and long_score >= MIN_SCORE:
-        send_signal(
-            symbol, "LONG",
-            long_score, long_reasons, df1
+    if (
+        trend == "BULLISH"
+        and long_score >= MIN_SCORE
+    ):
+        print(
+            "LONG signal:",
+            symbol
         )
 
-    elif trend == "BEARISH" and short_score >= MIN_SCORE:
         send_signal(
-            symbol, "SHORT",
-            short_score, short_reasons, df1
+            symbol,
+            "LONG",
+            long_score,
+            long_reasons,
+            df1
+        )
+
+    elif (
+        trend == "BEARISH"
+        and short_score >= MIN_SCORE
+    ):
+        print(
+            "SHORT signal:",
+            symbol
+        )
+
+        send_signal(
+            symbol,
+            "SHORT",
+            short_score,
+            short_reasons,
+            df1
+        )
+
+    else:
+        print(
+            "No strong signal:",
+            symbol
         )
 
 
 def main():
-    print("AI Swing Trade Scanner V2 started")
+    print(
+        "AI Swing Trade Scanner V2.1 started"
+    )
 
     try:
         exchange.load_markets()
-        print("Toobit connected successfully")
 
-    except Exception as e:
-        print("Toobit connection error:", e)
+        print(
+            "Toobit connected successfully"
+        )
+
+    except Exception as error:
+        print(
+            "Toobit connection error:",
+            error
+        )
         return
 
-    if os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch":
+    if (
+        os.getenv("GITHUB_EVENT_NAME")
+        == "workflow_dispatch"
+    ):
         send_message(
-            "✅ <b>AI Swing Trade Scanner V2 started</b>\n"
-            "⏱ Analysis: 1H + 4H"
+            "✅ <b>AI Swing Trade Scanner V2.1 started</b>\n"
+            "⏱ Analysis: 1H + 4H\n"
+            "🛡 Strong-signal filters enabled."
         )
 
     for symbol in SYMBOLS:
+
         try:
             analyze(symbol)
-        except Exception as e:
-            print("Analysis error:", symbol, e)
+
+        except Exception as error:
+            print(
+                "Analysis error:",
+                symbol,
+                error
+            )
 
         time.sleep(0.5)
 
-    print("All scans completed")
+    print(
+        "All scans completed"
+    )
 
 
 if __name__ == "__main__":
