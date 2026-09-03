@@ -78,6 +78,7 @@ def send_telegram_message(message):
             )
             return False
 
+        print("Telegram message sent successfully.")
         return True
 
     except Exception as error:
@@ -215,10 +216,16 @@ def analyze_symbol(symbol):
 def main():
     print("AI Trade Scanner started")
 
+    # Telegram connection test
+    send_telegram_message(
+        "✅ AI Trade Scanner Telegram test successful"
+    )
+
     for symbol in SYMBOLS:
         try:
             print(f"Scanning {symbol}...")
             analyze_symbol(symbol)
+
         except Exception as error:
             print(f"Error scanning {symbol}: {error}")
 
