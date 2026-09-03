@@ -5,393 +5,333 @@ import ccxt
 import pandas as pd
 import ta
 
-
-# =========================
-# CONFIGURATION
-# =========================
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+ENTRY_TF = "1h"
+TREND_TF = "4h"
+MIN_SCORE = 8
 
 SYMBOLS = [
-    "BTC/USDT",
-    "ETH/USDT",
-    "SOL/USDT",
-    "BNB/USDT",
-    "XRP/USDT",
-    "ADA/USDT",
-    "AVAX/USDT",
-    "DOGE/USDT",
-    "DOT/USDT",
-    "LINK/USDT",
-    "NEAR/USDT",
-    "LTC/USDT",
-    "SHIB/USDT",
-    "SUI/USDT",
-    "PEPE/USDT",
-    "APT/USDT",
-    "FET/USDT",
-    "RENDER/USDT",
-    "TON/USDT",
-    "TRX/USDT",
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT",
+    "XRP/USDT", "ADA/USDT", "AVAX/USDT", "DOGE/USDT",
+    "DOT/USDT", "LINK/USDT", "NEAR/USDT", "LTC/USDT",
+    "SHIB/USDT", "SUI/USDT", "PEPE/USDT", "APT/USDT",
+    "FET/USDT", "RENDER/USDT", "TON/USDT", "TRX/USDT"
 ]
-
-TIMEFRAME = "15m"
-
-
-# =========================
-# EXCHANGE - TOOBIT
-# =========================
 
 exchange = ccxt.toobit({
     "enableRateLimit": True,
+    "timeout": 20000
 })
 
 
-# =========================
-# TELEGRAM
-# =========================
-
 def clean_token():
-    token = (TELEGRAM_BOT_TOKEN or "").strip()
-
+    token = (TOKEN or "").strip()
     if token.lower().startswith("bot"):
         token = token[3:].strip()
-
     return token
 
 
-def get_telegram_chat_id():
+def get_chat_id():
     token = clean_token()
 
     if not token:
-        print("Telegram token is missing")
+        print("Telegram token missing")
         return None
 
     try:
         url = f"https://api.telegram.org/bot{token}/getUpdates"
+        r = requests.get(url, timeout=15)
 
-        response = requests.get(
-            url,
-            timeout=15,
-        )
-
-        print(
-            "Telegram getUpdates status:",
-            response.status_code,
-        )
-
-        if response.status_code != 200:
-            print(response.text)
+        if r.status_code != 200:
+            print("getUpdates error:", r.text)
             return None
 
-        data = response.json()
+        for update in reversed(r.json().get("result", [])):
+            message = update.get("message", {})
+            chat = message.get("chat", {})
 
-        if not data.get("ok"):
-            print(data)
-            return None
+            if chat.get("id") is not None:
+                return str(chat["id"])
 
-        updates = data.get("result", [])
+    except Exception as e:
+        print("Chat ID error:", e)
 
-        for update in reversed(updates):
-            message = update.get("message")
-
-            if message and message.get("chat"):
-                chat_id = message["chat"]["id"]
-
-                print(
-                    "Telegram chat found successfully."
-                )
-
-                return str(chat_id)
-
-        print(
-            "No Telegram chat found. Send /start to the bot."
-        )
-
-        return None
-
-    except Exception as error:
-        print(
-            "Telegram getUpdates error:",
-            error,
-        )
-
-        return None
+    return None
 
 
-def send_telegram_message(message):
+def send_message(text):
     token = clean_token()
+    chat_id = get_chat_id()
 
-    print(
-        "Telegram token loaded:",
-        bool(token),
-    )
-
-    if not token:
-        return False
+    if not token or not chat_id:
+        print("Telegram connection unavailable")
+        return
 
     try:
-        # Check bot token
-        get_me_url = (
-            f"https://api.telegram.org/"
-            f"bot{token}/getMe"
-        )
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-        get_me = requests.get(
-            get_me_url,
-            timeout=15,
-        )
-
-        print(
-            "Telegram getMe status:",
-            get_me.status_code,
-        )
-
-        if get_me.status_code != 200:
-            print(get_me.text)
-            return False
-
-        # Automatically detect correct chat ID
-        chat_id = get_telegram_chat_id()
-
-        if not chat_id:
-            return False
-
-        # Send Telegram message
-        url = (
-            f"https://api.telegram.org/"
-            f"bot{token}/sendMessage"
-        )
-
-        payload = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "HTML",
-        }
-
-        response = requests.post(
+        r = requests.post(
             url,
-            json=payload,
-            timeout=15,
+            json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML"
+            },
+            timeout=15
         )
 
-        print(
-            "Telegram sendMessage status:",
-            response.status_code,
-        )
+        print("Telegram status:", r.status_code)
 
-        print(
-            "Telegram sendMessage response:",
-            response.text,
-        )
-
-        if response.status_code == 200:
-            print(
-                "Telegram message sent successfully."
-            )
-
-            return True
-
-        return False
-
-    except Exception as error:
-        print(
-            "Telegram request error:",
-            error,
-        )
-
-        return False
+    except Exception as e:
+        print("Telegram error:", e)
 
 
-# =========================
-# MARKET DATA
-# =========================
-
-def fetch_data(symbol):
+def fetch_data(symbol, timeframe):
     try:
-        if not exchange.markets:
-            exchange.load_markets()
-
-        if symbol not in exchange.markets:
-            print(
-                f"{symbol} is not available on Toobit."
-            )
-
-            return None
-
-        ohlcv = exchange.fetch_ohlcv(
+        candles = exchange.fetch_ohlcv(
             symbol,
-            timeframe=TIMEFRAME,
-            limit=100,
+            timeframe=timeframe,
+            limit=260
         )
 
         df = pd.DataFrame(
-            ohlcv,
+            candles,
             columns=[
-                "timestamp",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-            ],
+                "timestamp", "open", "high",
+                "low", "close", "volume"
+            ]
+        )
+
+        df["datetime"] = pd.to_datetime(
+            df["timestamp"],
+            unit="ms",
+            utc=True
         )
 
         return df
 
-    except Exception as error:
-        print(
-            f"Fetch error for {symbol}: {error}"
-        )
-
+    except Exception as e:
+        print(f"Fetch error {symbol} {timeframe}: {e}")
         return None
 
 
-# =========================
-# ANALYSIS
-# =========================
+def indicators(df):
+    if df is None or len(df) < 220:
+        return None
 
-def analyze_symbol(symbol):
-    df = fetch_data(symbol)
+    df = df.copy()
 
-    if df is None or len(df) < 50:
-        return
+    df["ema20"] = ta.trend.EMAIndicator(
+        df["close"], 20
+    ).ema_indicator()
+
+    df["ema50"] = ta.trend.EMAIndicator(
+        df["close"], 50
+    ).ema_indicator()
+
+    df["ema200"] = ta.trend.EMAIndicator(
+        df["close"], 200
+    ).ema_indicator()
 
     df["rsi"] = ta.momentum.RSIIndicator(
-        df["close"],
-        window=14,
+        df["close"], 14
     ).rsi()
 
-    df["ema_fast"] = ta.trend.EMAIndicator(
-        df["close"],
-        window=20,
-    ).ema_indicator()
-
-    df["ema_slow"] = ta.trend.EMAIndicator(
-        df["close"],
-        window=50,
-    ).ema_indicator()
-
-    macd = ta.trend.MACD(
-        df["close"]
-    )
+    macd = ta.trend.MACD(df["close"])
 
     df["macd"] = macd.macd()
     df["macd_signal"] = macd.macd_signal()
+    df["macd_hist"] = macd.macd_diff()
 
     df["atr"] = ta.volatility.AverageTrueRange(
         df["high"],
         df["low"],
         df["close"],
-        window=14,
+        14
     ).average_true_range()
 
-    curr = df.iloc[-1]
-    prev = df.iloc[-2]
+    df["adx"] = ta.trend.ADXIndicator(
+        df["high"],
+        df["low"],
+        df["close"],
+        14
+    ).adx()
 
-    price = curr["close"]
-    atr = curr["atr"]
+    df["vol_ma"] = df["volume"].rolling(20).mean()
+    df["vol_ratio"] = df["volume"] / df["vol_ma"]
 
-    buy_condition = (
-        curr["rsi"] < 38
-        and curr["ema_fast"] > curr["ema_slow"]
-        and curr["macd"] > curr["macd_signal"]
-        and prev["macd"] <= prev["macd_signal"]
+    return df.dropna().reset_index(drop=True)
+
+
+def trend_4h(df):
+    x = df.iloc[-2]
+
+    if (
+        x["close"] > x["ema200"]
+        and x["ema20"] > x["ema50"] > x["ema200"]
+        and x["rsi"] >= 50
+    ):
+        return "BULLISH"
+
+    if (
+        x["close"] < x["ema200"]
+        and x["ema20"] < x["ema50"] < x["ema200"]
+        and x["rsi"] <= 50
+    ):
+        return "BEARISH"
+
+    return "NEUTRAL"
+
+
+def score_signal(df1, df4, side):
+    x = df1.iloc[-2]
+    p = df1.iloc[-3]
+    trend = trend_4h(df4)
+
+    score = 0
+    reasons = []
+
+    if side == "LONG":
+        tests = [
+            (trend == "BULLISH", 3, "4H bullish"),
+            (x["close"] > x["ema50"], 1, "Above EMA50"),
+            (x["ema20"] > x["ema50"], 1, "EMA bullish"),
+            (45 <= x["rsi"] <= 68, 1, f"RSI {x['rsi']:.1f}"),
+            (x["macd"] > x["macd_signal"], 1, "MACD bullish"),
+            (x["macd_hist"] > p["macd_hist"], 1, "Momentum rising"),
+            (x["adx"] >= 18, 1, f"ADX {x['adx']:.1f}"),
+            (x["vol_ratio"] >= 0.8, 1, "Volume confirmed")
+        ]
+
+    else:
+        tests = [
+            (trend == "BEARISH", 3, "4H bearish"),
+            (x["close"] < x["ema50"], 1, "Below EMA50"),
+            (x["ema20"] < x["ema50"], 1, "EMA bearish"),
+            (32 <= x["rsi"] <= 55, 1, f"RSI {x['rsi']:.1f}"),
+            (x["macd"] < x["macd_signal"], 1, "MACD bearish"),
+            (x["macd_hist"] < p["macd_hist"], 1, "Momentum falling"),
+            (x["adx"] >= 18, 1, f"ADX {x['adx']:.1f}"),
+            (x["vol_ratio"] >= 0.8, 1, "Volume confirmed")
+        ]
+
+    distance = abs(x["close"] - x["ema20"]) / x["close"]
+
+    if distance <= 0.015:
+        tests.append((True, 1, "EMA20 pullback"))
+
+    for ok, points, reason in tests:
+        if ok:
+            score += points
+            reasons.append(reason)
+
+    return score, reasons
+
+
+def levels(df, side):
+    x = df.iloc[-2]
+    entry = float(x["close"])
+    atr = float(x["atr"])
+    recent = df.iloc[-12:-1]
+
+    if side == "LONG":
+        swing = float(recent["low"].min())
+        sl = min(entry - 1.5 * atr, swing - 0.2 * atr)
+        risk = entry - sl
+        return entry, sl, entry + risk, entry + 2*risk, entry + 3*risk
+
+    swing = float(recent["high"].max())
+    sl = max(entry + 1.5 * atr, swing + 0.2 * atr)
+    risk = sl - entry
+
+    return entry, sl, entry - risk, entry - 2*risk, entry - 3*risk
+
+
+def send_signal(symbol, side, score, reasons, df):
+    entry, sl, tp1, tp2, tp3 = levels(df, side)
+    x = df.iloc[-2]
+
+    icon = "🟢" if side == "LONG" else "🔴"
+    reason_text = "\n".join("• " + r for r in reasons)
+
+    message = (
+        f"{icon} <b>{side} SIGNAL</b>\n\n"
+        f"💎 <b>{symbol}</b>\n"
+        f"⏱ 1H entry / 4H trend\n\n"
+        f"💵 Entry: {entry:.6f}\n"
+        f"🛑 SL: {sl:.6f}\n"
+        f"🎯 TP1: {tp1:.6f}\n"
+        f"🎯 TP2: {tp2:.6f}\n"
+        f"🎯 TP3: {tp3:.6f}\n\n"
+        f"⭐ Score: {score}/11\n"
+        f"📊 RSI: {x['rsi']:.1f}\n"
+        f"📏 ADX: {x['adx']:.1f}\n\n"
+        f"{reason_text}"
     )
 
-    sell_condition = (
-        curr["rsi"] > 62
-        and curr["ema_fast"] < curr["ema_slow"]
-        and curr["macd"] < curr["macd_signal"]
-        and prev["macd"] >= prev["macd_signal"]
-    )
+    send_message(message)
+
+
+def analyze(symbol):
+    print(f"Scanning {symbol}...")
+
+    df1 = indicators(fetch_data(symbol, ENTRY_TF))
+    df4 = indicators(fetch_data(symbol, TREND_TF))
+
+    if df1 is None or df4 is None:
+        print("Not enough data:", symbol)
+        return
+
+    trend = trend_4h(df4)
+    long_score, long_reasons = score_signal(df1, df4, "LONG")
+    short_score, short_reasons = score_signal(df1, df4, "SHORT")
 
     print(
-        f"{symbol} | "
-        f"Price: {price} | "
-        f"RSI: {curr['rsi']:.2f}"
+        symbol,
+        "| Trend:", trend,
+        "| LONG:", long_score,
+        "| SHORT:", short_score
     )
 
-    if buy_condition:
-        stop_loss = price - (1.5 * atr)
-        take_profit = price + (3.0 * atr)
-
-        message = (
-            f"🟢 <b>BUY SIGNAL</b>\n\n"
-            f"🔹 <b>Pair:</b> {symbol}\n"
-            f"⏱ <b>Timeframe:</b> {TIMEFRAME}\n"
-            f"💵 <b>Entry:</b> {price:,.4f}\n"
-            f"🛑 <b>SL:</b> {stop_loss:,.4f}\n"
-            f"🎯 <b>TP:</b> {take_profit:,.4f}\n"
-            f"📊 <b>RSI:</b> {curr['rsi']:.1f}\n"
-            f"⚖️ <b>Risk/Reward:</b> 1:2"
+    if trend == "BULLISH" and long_score >= MIN_SCORE:
+        send_signal(
+            symbol, "LONG",
+            long_score, long_reasons, df1
         )
 
-        send_telegram_message(message)
-
-    elif sell_condition:
-        stop_loss = price + (1.5 * atr)
-        take_profit = price - (3.0 * atr)
-
-        message = (
-            f"🔴 <b>SELL SIGNAL</b>\n\n"
-            f"🔹 <b>Pair:</b> {symbol}\n"
-            f"⏱ <b>Timeframe:</b> {TIMEFRAME}\n"
-            f"💵 <b>Entry:</b> {price:,.4f}\n"
-            f"🛑 <b>SL:</b> {stop_loss:,.4f}\n"
-            f"🎯 <b>TP:</b> {take_profit:,.4f}\n"
-            f"📊 <b>RSI:</b> {curr['rsi']:.1f}\n"
-            f"⚖️ <b>Risk/Reward:</b> 1:2"
+    elif trend == "BEARISH" and short_score >= MIN_SCORE:
+        send_signal(
+            symbol, "SHORT",
+            short_score, short_reasons, df1
         )
 
-        send_telegram_message(message)
-
-
-# =========================
-# MAIN
-# =========================
 
 def main():
-    print("AI Trade Scanner started")
-
-    # Telegram connection test
-    send_telegram_message(
-        "✅ AI Trade Scanner is connected successfully."
-    )
-
-    print("Connecting to Toobit...")
+    print("AI Swing Trade Scanner V2 started")
 
     try:
         exchange.load_markets()
+        print("Toobit connected successfully")
 
-        print(
-            "Toobit connected successfully."
-        )
-
-    except Exception as error:
-        print(
-            "Toobit connection error:",
-            error,
-        )
-
+    except Exception as e:
+        print("Toobit connection error:", e)
         return
+
+    if os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch":
+        send_message(
+            "✅ <b>AI Swing Trade Scanner V2 started</b>\n"
+            "⏱ Analysis: 1H + 4H"
+        )
 
     for symbol in SYMBOLS:
         try:
-            print(
-                f"Scanning {symbol}..."
-            )
-
-            analyze_symbol(symbol)
-
-        except Exception as error:
-            print(
-                f"Error scanning {symbol}: {error}"
-            )
+            analyze(symbol)
+        except Exception as e:
+            print("Analysis error:", symbol, e)
 
         time.sleep(0.5)
 
-    print("Scan completed")
+    print("All scans completed")
 
 
 if __name__ == "__main__":
