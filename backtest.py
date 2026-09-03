@@ -1,43 +1,31 @@
 import time
+import math
 import ccxt
 import pandas as pd
 import ta
 
-
-DAYS = 120
-TEST_DAYS = 30
+DAYS = 365
+DISCOVERY_DAYS = 120
+MAX_HOLD_HOURS = 72
+RISK_PER_TRADE = 0.01
+TARGET_NO = 2
 
 MIN_SCORE = 9
 MIN_ADX = 22
-MAX_HOLD_HOURS = 72
-RISK_PER_TRADE = 0.01
 
-TARGET_NO = 2
-
+# فرض محافظه‌کارانه هزینه معامله
+# 0.06% کارمزد + 0.03% اسلیپیج در هر سمت
+FEE_PER_SIDE = 0.0006
+SLIPPAGE_PER_SIDE = 0.0003
+ROUND_TRIP_COST_PCT = 2 * (FEE_PER_SIDE + SLIPPAGE_PER_SIDE)
 
 SYMBOLS = [
-    "BTC/USDT",
-    "ETH/USDT",
-    "SOL/USDT",
-    "BNB/USDT",
-    "XRP/USDT",
-    "ADA/USDT",
-    "AVAX/USDT",
-    "DOGE/USDT",
-    "DOT/USDT",
-    "LINK/USDT",
-    "NEAR/USDT",
-    "LTC/USDT",
-    "SHIB/USDT",
-    "SUI/USDT",
-    "PEPE/USDT",
-    "APT/USDT",
-    "FET/USDT",
-    "RENDER/USDT",
-    "TON/USDT",
-    "TRX/USDT"
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT",
+    "XRP/USDT", "ADA/USDT", "AVAX/USDT", "DOGE/USDT",
+    "DOT/USDT", "LINK/USDT", "NEAR/USDT", "LTC/USDT",
+    "SHIB/USDT", "SUI/USDT", "PEPE/USDT", "APT/USDT",
+    "FET/USDT", "RENDER/USDT", "TON/USDT", "TRX/USDT"
 ]
-
 
 exchange = ccxt.toobit({
     "enableRateLimit": True,
@@ -47,12 +35,7 @@ exchange = ccxt.toobit({
 
 def fetch_history(symbol, timeframe, days):
     ms_per_bar = exchange.parse_timeframe(timeframe) * 1000
-
-    since = (
-        exchange.milliseconds()
-        - days * 24 * 60 * 60 * 1000
-    )
-
+    since = exchange.milliseconds() - days * 24 * 60 * 60 * 1000
     rows = []
 
     while True:
@@ -73,14 +56,12 @@ def fetch_history(symbol, timeframe, days):
         if next_since <= since:
             break
 
+        since = next_since
+
         if len(batch) < 1000:
             break
 
-        since = next_since
-
-        time.sleep(
-            exchange.rateLimit / 1000
-        )
+        time.sleep(exchange.rateLimit / 1000)
 
     if not rows:
         return None
@@ -136,9 +117,7 @@ def add_indicators(df):
         14
     ).rsi()
 
-    macd = ta.trend.MACD(
-        df["close"]
-    )
+    macd = ta.trend.MACD(df["close"])
 
     df["macd"] = macd.macd()
     df["macd_signal"] = macd.macd_signal()
@@ -182,7 +161,7 @@ def prepare(symbol):
     h4 = fetch_history(
         symbol,
         "4h",
-        DAYS + 40
+        DAYS + 45
     )
 
     if h1 is None or h4 is None:
@@ -210,9 +189,7 @@ def prepare(symbol):
             "ema200",
             "rsi"
         ]
-    ]
-
-    h4 = h4.rename(
+    ].rename(
         columns={
             "close": "close4",
             "ema20": "ema20_4",
@@ -230,13 +207,11 @@ def prepare(symbol):
         direction="backward"
     )
 
-    merged = (
+    return (
         merged
         .dropna()
         .reset_index(drop=True)
     )
-
-    return merged
 
 
 def trend4(row):
@@ -262,8 +237,6 @@ def trend4(row):
 def score_signal(df, i, side, trend):
     x = df.iloc[i]
     p = df.iloc[i - 1]
-
-    points = 0
 
     if side == "LONG":
         tests = [
@@ -294,13 +267,15 @@ def score_signal(df, i, side, trend):
     ) / x["close"]
 
     if distance <= 0.015:
-        tests.append((True, 1))
+        tests.append(
+            (True, 1)
+        )
 
-    for ok, pts in tests:
-        if ok:
-            points += pts
-
-    return points
+    return sum(
+        pts
+        for ok, pts in tests
+        if ok
+    )
 
 
 def levels(df, i, side):
@@ -311,8 +286,13 @@ def levels(df, i, side):
         i + 1
     ]
 
-    entry = float(x["close"])
-    atr = float(x["atr"])
+    entry = float(
+        x["close"]
+    )
+
+    atr = float(
+        x["atr"]
+    )
 
     if side == "LONG":
         swing = float(
@@ -418,7 +398,6 @@ def find_candidates(symbol, df):
             "score": int(sc),
             "rsi": float(x["rsi"]),
             "adx": float(x["adx"]),
-            "vol_ratio": float(x["vol_ratio"]),
             "entry": entry,
             "sl": sl,
             "tps": tps
@@ -442,12 +421,20 @@ def simulate(df, trade):
     )
 
     if risk <= 0:
-        return 0.0, trade["i"], "INVALID"
+        return (
+            0.0,
+            trade["i"],
+            "INVALID"
+        )
 
     end_i = min(
         trade["i"] + MAX_HOLD_HOURS,
         len(df) - 1
     )
+
+    raw_r = None
+    exit_i = end_i
+    reason = "TIME"
 
     for j in range(
         trade["i"] + 1,
@@ -456,155 +443,73 @@ def simulate(df, trade):
         bar = df.iloc[j]
 
         if trade["side"] == "LONG":
-            hit_sl = bar["low"] <= sl
-            hit_tp = bar["high"] >= tp
+            hit_sl = (
+                bar["low"] <= sl
+            )
+
+            hit_tp = (
+                bar["high"] >= tp
+            )
 
         else:
-            hit_sl = bar["high"] >= sl
-            hit_tp = bar["low"] <= tp
+            hit_sl = (
+                bar["high"] >= sl
+            )
+
+            hit_tp = (
+                bar["low"] <= tp
+            )
 
         if hit_sl and hit_tp:
-            return -1.0, j, "SL-FIRST"
+            raw_r = -1.0
+            exit_i = j
+            reason = "SL-FIRST"
+            break
 
         if hit_sl:
-            return -1.0, j, "SL"
+            raw_r = -1.0
+            exit_i = j
+            reason = "SL"
+            break
 
         if hit_tp:
-            return float(TARGET_NO), j, f"TP{TARGET_NO}"
+            raw_r = float(
+                TARGET_NO
+            )
 
-    exit_price = float(
-        df.iloc[end_i]["close"]
-    )
+            exit_i = j
+            reason = f"TP{TARGET_NO}"
+            break
 
-    if trade["side"] == "LONG":
-        r = (
-            exit_price - entry
-        ) / risk
-
-    else:
-        r = (
-            entry - exit_price
-        ) / risk
-
-    return float(r), end_i, "TIME"
-
-
-def calc_metrics(results):
-    if not results:
-        return None
-
-    rs = [
-        row["r"]
-        for row in results
-    ]
-
-    wins = sum(
-        r > 0
-        for r in rs
-    )
-
-    losses = sum(
-        r < 0
-        for r in rs
-    )
-
-    gross_profit = sum(
-        r
-        for r in rs
-        if r > 0
-    )
-
-    gross_loss = abs(
-        sum(
-            r
-            for r in rs
-            if r < 0
-        )
-    )
-
-    if gross_loss > 0:
-        pf = gross_profit / gross_loss
-    else:
-        pf = float("inf")
-
-    equity = 100.0
-    peak = 100.0
-    max_dd = 0.0
-
-    for r in rs:
-        equity *= (
-            1
-            + RISK_PER_TRADE * r
+    if raw_r is None:
+        exit_price = float(
+            df.iloc[end_i]["close"]
         )
 
-        if equity > peak:
-            peak = equity
+        if trade["side"] == "LONG":
+            raw_r = (
+                exit_price - entry
+            ) / risk
 
-        if peak > 0:
-            dd = (
-                peak - equity
-            ) / peak * 100
+        else:
+            raw_r = (
+                entry - exit_price
+            ) / risk
 
-            if dd > max_dd:
-                max_dd = dd
+    cost_r = (
+        entry
+        * ROUND_TRIP_COST_PCT
+    ) / risk
 
-    return {
-        "trades": len(results),
-        "wins": wins,
-        "losses": losses,
-        "win_rate": wins / len(results) * 100,
-        "net_r": sum(rs),
-        "avg_r": sum(rs) / len(rs),
-        "pf": pf,
-        "max_dd": max_dd,
-        "equity": equity
-    }
-
-
-def print_metrics(name, results):
-    m = calc_metrics(results)
-
-    print()
-    print("=" * 64)
-    print(name)
-    print("=" * 64)
-
-    if m is None:
-        print("NO TRADES")
-        return
-
-    print("Trades:", m["trades"])
-    print("Wins:", m["wins"])
-    print("Losses:", m["losses"])
-
-    print(
-        "Win rate:",
-        f'{m["win_rate"]:.2f}%'
+    net_r = (
+        raw_r
+        - cost_r
     )
 
-    print(
-        "Profit factor:",
-        f'{m["pf"]:.2f}'
-    )
-
-    print(
-        "Net R:",
-        f'{m["net_r"]:.2f}R'
-    )
-
-    print(
-        "Avg R:",
-        f'{m["avg_r"]:.3f}R'
-    )
-
-    print(
-        "Max drawdown:",
-        f'{m["max_dd"]:.2f}%'
-    )
-
-    print(
-        "Ending equity:",
-        f'{m["equity"]:.2f}'
+    return (
+        float(net_r),
+        exit_i,
+        reason
     )
 
 
@@ -651,59 +556,213 @@ def run_variant(
             "exit": reason
         })
 
-    results.sort(
+    return sorted(
+        results,
         key=lambda x: x["time"]
     )
 
-    return results
+
+def calc_metrics(results):
+    if not results:
+        return None
+
+    rs = [
+        x["r"]
+        for x in results
+    ]
+
+    wins = sum(
+        r > 0
+        for r in rs
+    )
+
+    losses = sum(
+        r < 0
+        for r in rs
+    )
+
+    gross_profit = sum(
+        r
+        for r in rs
+        if r > 0
+    )
+
+    gross_loss = abs(
+        sum(
+            r
+            for r in rs
+            if r < 0
+        )
+    )
+
+    if gross_loss > 0:
+        pf = (
+            gross_profit
+            / gross_loss
+        )
+    else:
+        pf = float("inf")
+
+    equity = 100.0
+    peak = 100.0
+    max_dd = 0.0
+
+    for r in rs:
+        equity *= (
+            1
+            + RISK_PER_TRADE * r
+        )
+
+        peak = max(
+            peak,
+            equity
+        )
+
+        if peak > 0:
+            max_dd = max(
+                max_dd,
+                (
+                    peak - equity
+                ) / peak * 100
+            )
+
+    return {
+        "trades": len(rs),
+        "wins": wins,
+        "losses": losses,
+        "win_rate": (
+            wins / len(rs) * 100
+        ),
+        "pf": pf,
+        "net_r": sum(rs),
+        "avg_r": (
+            sum(rs) / len(rs)
+        ),
+        "max_dd": max_dd,
+        "equity": equity
+    }
 
 
-def period_filter(
-    results,
-    cutoff,
-    mode
+def print_metrics(
+    label,
+    results
 ):
-    if mode == "TRAIN":
-        return [
-            r
-            for r in results
-            if r["time"] < cutoff
+    m = calc_metrics(
+        results
+    )
+
+    print()
+    print("=" * 68)
+    print(label)
+    print("=" * 68)
+
+    if m is None:
+        print("NO TRADES")
+        return
+
+    if math.isinf(m["pf"]):
+        pf_text = "INF"
+    else:
+        pf_text = f'{m["pf"]:.2f}'
+
+    print(
+        "Trades:",
+        m["trades"]
+    )
+
+    print(
+        "Wins:",
+        m["wins"]
+    )
+
+    print(
+        "Losses:",
+        m["losses"]
+    )
+
+    print(
+        "Win rate:",
+        f'{m["win_rate"]:.2f}%'
+    )
+
+    print(
+        "Profit factor:",
+        pf_text
+    )
+
+    print(
+        "Net R:",
+        f'{m["net_r"]:.2f}R'
+    )
+
+    print(
+        "Avg R:",
+        f'{m["avg_r"]:.3f}R'
+    )
+
+    print(
+        "Max drawdown:",
+        f'{m["max_dd"]:.2f}%'
+    )
+
+    print(
+        "Ending equity:",
+        f'{m["equity"]:.2f}'
+    )
+
+
+def slice_results(
+    results,
+    start=None,
+    end=None
+):
+    out = results
+
+    if start is not None:
+        out = [
+            x
+            for x in out
+            if x["time"] >= start
         ]
 
-    if mode == "TEST":
-        return [
-            r
-            for r in results
-            if r["time"] >= cutoff
+    if end is not None:
+        out = [
+            x
+            for x in out
+            if x["time"] < end
         ]
 
-    return results
+    return out
 
 
 def main():
     print(
-        "AI TRADE SCANNER - V3 FILTER TEST"
+        "AI TRADE SCANNER - FINAL VALIDATION"
     )
 
     print(
-        "Backtest period:",
+        "Period:",
         DAYS,
         "days"
     )
 
     print(
-        "Out-of-sample test:",
-        TEST_DAYS,
-        "days"
-    )
-
-    print(
-        "Exit target: TP2"
+        "Target: TP2"
     )
 
     print(
         "Symbols:",
         len(SYMBOLS)
+    )
+
+    print(
+        "Risk per trade:",
+        f"{RISK_PER_TRADE * 100:.2f}%"
+    )
+
+    print(
+        "Cost assumption:",
+        f"{ROUND_TRIP_COST_PCT * 100:.3f}% round trip"
     )
 
     data = {}
@@ -717,11 +776,13 @@ def main():
         )
 
         try:
-            df = prepare(symbol)
+            df = prepare(
+                symbol
+            )
 
             if (
                 df is None
-                or len(df) < 300
+                or len(df) < 500
             ):
                 print(
                     "Skipped - insufficient data"
@@ -735,7 +796,9 @@ def main():
                 df
             )
 
-            candidates.extend(found)
+            candidates.extend(
+                found
+            )
 
             print(
                 "Candidates:",
@@ -759,24 +822,18 @@ def main():
         len(candidates)
     )
 
-    cutoff = (
-        pd.Timestamp.now(tz="UTC")
+    now = pd.Timestamp.now(
+        tz="UTC"
+    )
+
+    recent_120_start = (
+        now
         - pd.Timedelta(
-            days=TEST_DAYS
+            days=DISCOVERY_DAYS
         )
     )
 
-    print(
-        "TEST PERIOD START:",
-        cutoff
-    )
-
     variants = [
-        (
-            "A - CURRENT ALL LONG + SHORT",
-            lambda t: True
-        ),
-
         (
             "B - LONG ONLY",
             lambda t:
@@ -808,7 +865,7 @@ def main():
         )
     ]
 
-    validation_rows = []
+    ranking = []
 
     for name, condition in variants:
         results = run_variant(
@@ -817,101 +874,134 @@ def main():
             condition
         )
 
-        all_results = period_filter(
+        older_holdout = slice_results(
             results,
-            cutoff,
-            "ALL"
+            end=recent_120_start
         )
 
-        train_results = period_filter(
+        recent_120 = slice_results(
             results,
-            cutoff,
-            "TRAIN"
+            start=recent_120_start
         )
 
-        test_results = period_filter(
+        last_90 = slice_results(
             results,
-            cutoff,
-            "TEST"
+            start=now - pd.Timedelta(days=90)
+        )
+
+        last_30 = slice_results(
+            results,
+            start=now - pd.Timedelta(days=30)
         )
 
         print()
-        print("#" * 72)
+        print("#" * 76)
         print(name)
-        print("#" * 72)
+        print("#" * 76)
 
         print_metrics(
-            "ALL 120 DAYS",
-            all_results
-        )
-
-        print_metrics(
-            "TRAIN - FIRST 90 DAYS",
-            train_results
+            "FULL 365 DAYS",
+            results
         )
 
         print_metrics(
-            "TEST - LAST 30 DAYS",
-            test_results
+            "OLDER HOLDOUT - BEFORE RECENT 120 DAYS",
+            older_holdout
         )
 
-        test_metrics = calc_metrics(
-            test_results
+        print_metrics(
+            "RECENT 120 DAYS",
+            recent_120
         )
 
-        if test_metrics:
-            validation_rows.append({
+        print_metrics(
+            "LAST 90 DAYS",
+            last_90
+        )
+
+        print_metrics(
+            "LAST 30 DAYS",
+            last_30
+        )
+
+        holdout_m = calc_metrics(
+            older_holdout
+        )
+
+        full_m = calc_metrics(
+            results
+        )
+
+        if (
+            holdout_m
+            and full_m
+        ):
+            ranking.append({
                 "name": name,
-                "trades": test_metrics["trades"],
-                "pf": test_metrics["pf"],
-                "net_r": test_metrics["net_r"],
-                "wr": test_metrics["win_rate"],
-                "dd": test_metrics["max_dd"]
+                "holdout_trades": holdout_m["trades"],
+                "holdout_pf": holdout_m["pf"],
+                "holdout_net_r": holdout_m["net_r"],
+                "holdout_dd": holdout_m["max_dd"],
+                "full_trades": full_m["trades"],
+                "full_pf": full_m["pf"],
+                "full_net_r": full_m["net_r"]
             })
 
     print()
-    print("#" * 72)
+    print("#" * 76)
     print(
-        "OUT-OF-SAMPLE RANKING - LAST 30 DAYS"
+        "FINAL RANKING - OLDER HOLDOUT FIRST"
     )
-    print("#" * 72)
+    print("#" * 76)
 
-    validation_rows.sort(
+    ranking.sort(
         key=lambda x: (
-            x["net_r"],
-            x["pf"]
+            x["holdout_net_r"],
+            x["holdout_pf"]
         ),
         reverse=True
     )
 
-    for row in validation_rows:
+    for row in ranking:
+        if math.isinf(
+            row["holdout_pf"]
+        ):
+            holdout_pf = "INF"
+        else:
+            holdout_pf = (
+                f'{row["holdout_pf"]:.2f}'
+            )
+
+        if math.isinf(
+            row["full_pf"]
+        ):
+            full_pf = "INF"
+        else:
+            full_pf = (
+                f'{row["full_pf"]:.2f}'
+            )
+
         print(
             f'{row["name"]} | '
-            f'Trades:{row["trades"]} | '
-            f'WR:{row["wr"]:.2f}% | '
-            f'PF:{row["pf"]:.2f} | '
-            f'NetR:{row["net_r"]:.2f}R | '
-            f'DD:{row["dd"]:.2f}%'
+            f'HOLDOUT Trades:{row["holdout_trades"]} | '
+            f'PF:{holdout_pf} | '
+            f'NetR:{row["holdout_net_r"]:.2f}R | '
+            f'DD:{row["holdout_dd"]:.2f}% | '
+            f'FULL Trades:{row["full_trades"]} | '
+            f'PF:{full_pf} | '
+            f'NetR:{row["full_net_r"]:.2f}R'
         )
 
     print()
     print(
-        "IMPORTANT: Fees and slippage are not included."
+        "FINAL VALIDATION COMPLETED"
     )
 
     print(
-        "Do not select a variant only because it had the best 120-day result."
-    )
-
-    print(
-        "The last 30-day TEST result is the more important validation check."
-    )
-
-    print()
-    print(
-        "V3 filter test completed."
+        "Do not update main.py until the older holdout result is checked."
     )
 
 
 if __name__ == "__main__":
     main()
+    
