@@ -6,8 +6,16 @@ import ccxt
 import pandas as pd
 import ta
 
+from forward_tracker import (
+    has_open_trade,
+    record_signal,
+    update_open_trades,
+    closed_trade_text,
+    summary_text,
+)
+
 # ============================================================
-# AI SWING TRADE SCANNER - FINAL FORWARD TEST
+# AI SWING TRADE SCANNER - FINAL FORWARD TEST + TRACKER
 # Filter E: LONG + ADX >= 40 + RSI 60-70 + SCORE == 9
 # Entry: 1H | Trend: 4H | Primary target: TP2
 # SIGNAL ONLY - NO AUTOMATIC ORDER EXECUTION
@@ -22,7 +30,6 @@ ENTRY_TF = "1h"
 TREND_TF = "4h"
 
 BASE_MIN_ADX = 22
-
 FINAL_MIN_ADX = 40
 FINAL_MIN_RSI = 60
 FINAL_MAX_RSI = 70
@@ -31,11 +38,26 @@ FINAL_SCORE = 9
 STATE_FILE = "signal_state.json"
 
 SYMBOLS = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT",
-    "XRP/USDT", "ADA/USDT", "AVAX/USDT", "DOGE/USDT",
-    "DOT/USDT", "LINK/USDT", "NEAR/USDT", "LTC/USDT",
-    "SHIB/USDT", "SUI/USDT", "PEPE/USDT", "APT/USDT",
-    "FET/USDT", "RENDER/USDT", "TON/USDT", "TRX/USDT",
+    "BTC/USDT",
+    "ETH/USDT",
+    "SOL/USDT",
+    "BNB/USDT",
+    "XRP/USDT",
+    "ADA/USDT",
+    "AVAX/USDT",
+    "DOGE/USDT",
+    "DOT/USDT",
+    "LINK/USDT",
+    "NEAR/USDT",
+    "LTC/USDT",
+    "SHIB/USDT",
+    "SUI/USDT",
+    "PEPE/USDT",
+    "APT/USDT",
+    "FET/USDT",
+    "RENDER/USDT",
+    "TON/USDT",
+    "TRX/USDT",
 ]
 
 exchange = ccxt.toobit({
@@ -46,23 +68,40 @@ exchange = ccxt.toobit({
 CHAT_ID = None
 
 
-# =========================
-# STATE
-# =========================
+# ============================================================
+# SIGNAL STATE
+# ============================================================
 
 def load_state():
-    if not os.path.exists(STATE_FILE):
-        print("No previous signal state found")
+
+    if not os.path.exists(
+        STATE_FILE
+    ):
+
+        print(
+            "No previous signal state found"
+        )
+
         return {}
 
     try:
+
         with open(
             STATE_FILE,
             "r",
             encoding="utf-8"
         ) as f:
 
-            state = json.load(f)
+            state = json.load(
+                f
+            )
+
+        if not isinstance(
+            state,
+            dict
+        ):
+
+            return {}
 
         print(
             "Signal state loaded:",
@@ -81,12 +120,19 @@ def load_state():
         return {}
 
 
-def save_state(state):
+def save_state(
+    state
+):
 
     try:
 
+        temp_file = (
+            STATE_FILE
+            + ".tmp"
+        )
+
         with open(
-            STATE_FILE,
+            temp_file,
             "w",
             encoding="utf-8"
         ) as f:
@@ -97,6 +143,11 @@ def save_state(state):
                 ensure_ascii=False,
                 indent=2
             )
+
+        os.replace(
+            temp_file,
+            STATE_FILE
+        )
 
     except Exception as error:
 
@@ -135,14 +186,15 @@ def is_duplicate_signal(
 
     return bool(
         previous
-        and previous.get("side")
-        == "LONG"
+        and previous.get(
+            "side"
+        ) == "LONG"
     )
 
 
-# =========================
+# ============================================================
 # TELEGRAM
-# =========================
+# ============================================================
 
 def clean_token():
 
@@ -154,7 +206,10 @@ def clean_token():
         "bot"
     ):
 
-        token = token[3:].strip()
+        token = (
+            token[3:]
+            .strip()
+        )
 
     return token
 
@@ -232,7 +287,9 @@ def get_chat_id():
             ) is not None:
 
                 CHAT_ID = str(
-                    chat["id"]
+                    chat[
+                        "id"
+                    ]
                 )
 
                 return CHAT_ID
@@ -247,12 +304,18 @@ def get_chat_id():
     return None
 
 
-def send_message(text):
+def send_message(
+    text
+):
 
     token = clean_token()
+
     chat_id = get_chat_id()
 
-    if not token or not chat_id:
+    if (
+        not token
+        or not chat_id
+    ):
 
         print(
             "Telegram connection unavailable"
@@ -266,9 +329,14 @@ def send_message(text):
             f"https://api.telegram.org/"
             f"bot{token}/sendMessage",
             json={
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML",
+                "chat_id":
+                    chat_id,
+
+                "text":
+                    text,
+
+                "parse_mode":
+                    "HTML",
             },
             timeout=15,
         )
@@ -278,7 +346,10 @@ def send_message(text):
             response.status_code
         )
 
-        if response.status_code != 200:
+        if (
+            response.status_code
+            != 200
+        ):
 
             print(
                 "Telegram response:",
@@ -299,9 +370,9 @@ def send_message(text):
         return False
 
 
-# =========================
+# ============================================================
 # MARKET DATA
-# =========================
+# ============================================================
 
 def fetch_data(
     symbol,
@@ -310,10 +381,12 @@ def fetch_data(
 
     try:
 
-        candles = exchange.fetch_ohlcv(
-            symbol,
-            timeframe=timeframe,
-            limit=260
+        candles = (
+            exchange.fetch_ohlcv(
+                symbol,
+                timeframe=timeframe,
+                limit=260
+            )
         )
 
         if not candles:
@@ -328,12 +401,16 @@ def fetch_data(
                 "high",
                 "low",
                 "close",
-                "volume"
+                "volume",
             ]
         )
 
-        df["datetime"] = pd.to_datetime(
-            df["timestamp"],
+        df[
+            "datetime"
+        ] = pd.to_datetime(
+            df[
+                "timestamp"
+            ],
             unit="ms",
             utc=True
         )
@@ -352,11 +429,13 @@ def fetch_data(
         return None
 
 
-# =========================
+# ============================================================
 # INDICATORS
-# =========================
+# ============================================================
 
-def indicators(df):
+def indicators(
+    df
+):
 
     if (
         df is None
@@ -367,89 +446,143 @@ def indicators(df):
 
     df = df.copy()
 
-    df["ema20"] = (
+    df[
+        "ema20"
+    ] = (
         ta.trend
         .EMAIndicator(
-            df["close"],
+            df[
+                "close"
+            ],
             window=20
         )
         .ema_indicator()
     )
 
-    df["ema50"] = (
+    df[
+        "ema50"
+    ] = (
         ta.trend
         .EMAIndicator(
-            df["close"],
+            df[
+                "close"
+            ],
             window=50
         )
         .ema_indicator()
     )
 
-    df["ema200"] = (
+    df[
+        "ema200"
+    ] = (
         ta.trend
         .EMAIndicator(
-            df["close"],
+            df[
+                "close"
+            ],
             window=200
         )
         .ema_indicator()
     )
 
-    df["rsi"] = (
+    df[
+        "rsi"
+    ] = (
         ta.momentum
         .RSIIndicator(
-            df["close"],
+            df[
+                "close"
+            ],
             window=14
         )
         .rsi()
     )
 
-    macd = ta.trend.MACD(
-        df["close"]
+    macd = (
+        ta.trend.MACD(
+            df[
+                "close"
+            ]
+        )
     )
 
-    df["macd"] = (
+    df[
+        "macd"
+    ] = (
         macd.macd()
     )
 
-    df["macd_signal"] = (
+    df[
+        "macd_signal"
+    ] = (
         macd.macd_signal()
     )
 
-    df["macd_hist"] = (
+    df[
+        "macd_hist"
+    ] = (
         macd.macd_diff()
     )
 
-    df["atr"] = (
+    df[
+        "atr"
+    ] = (
         ta.volatility
         .AverageTrueRange(
-            df["high"],
-            df["low"],
-            df["close"],
+            df[
+                "high"
+            ],
+            df[
+                "low"
+            ],
+            df[
+                "close"
+            ],
             window=14
         )
         .average_true_range()
     )
 
-    df["adx"] = (
+    df[
+        "adx"
+    ] = (
         ta.trend
         .ADXIndicator(
-            df["high"],
-            df["low"],
-            df["close"],
+            df[
+                "high"
+            ],
+            df[
+                "low"
+            ],
+            df[
+                "close"
+            ],
             window=14
         )
         .adx()
     )
 
-    df["vol_ma"] = (
-        df["volume"]
-        .rolling(20)
+    df[
+        "vol_ma"
+    ] = (
+        df[
+            "volume"
+        ]
+        .rolling(
+            20
+        )
         .mean()
     )
 
-    df["vol_ratio"] = (
-        df["volume"]
-        / df["vol_ma"]
+    df[
+        "vol_ratio"
+    ] = (
+        df[
+            "volume"
+        ]
+        / df[
+            "vol_ma"
+        ]
     )
 
     return (
@@ -461,29 +594,76 @@ def indicators(df):
     )
 
 
-# =========================
+# ============================================================
 # 4H TREND
-# =========================
+# ============================================================
 
-def trend_4h(df):
+def trend_4h(
+    df
+):
 
-    # آخرین کندل بسته‌شده 4H
-    x = df.iloc[-2]
+    # Last closed 4H candle
+
+    x = df.iloc[
+        -2
+    ]
 
     if (
-        x["close"] > x["ema200"]
-        and x["ema20"] > x["ema50"]
-        and x["ema50"] > x["ema200"]
-        and x["rsi"] >= 50
+        x[
+            "close"
+        ]
+        > x[
+            "ema200"
+        ]
+
+        and x[
+            "ema20"
+        ]
+        > x[
+            "ema50"
+        ]
+
+        and x[
+            "ema50"
+        ]
+        > x[
+            "ema200"
+        ]
+
+        and x[
+            "rsi"
+        ]
+        >= 50
     ):
 
         return "BULLISH"
 
     if (
-        x["close"] < x["ema200"]
-        and x["ema20"] < x["ema50"]
-        and x["ema50"] < x["ema200"]
-        and x["rsi"] <= 50
+        x[
+            "close"
+        ]
+        < x[
+            "ema200"
+        ]
+
+        and x[
+            "ema20"
+        ]
+        < x[
+            "ema50"
+        ]
+
+        and x[
+            "ema50"
+        ]
+        < x[
+            "ema200"
+        ]
+
+        and x[
+            "rsi"
+        ]
+        <= 50
     ):
 
         return "BEARISH"
@@ -491,90 +671,144 @@ def trend_4h(df):
     return "NEUTRAL"
 
 
-# =========================
+# ============================================================
 # SCORE ENGINE
-# =========================
+# ============================================================
 
 def score_long(
     df1,
     df4
 ):
 
-    # آخرین کندل بسته‌شده 1H
-    x = df1.iloc[-2]
+    # Last closed 1H candle
 
-    previous = df1.iloc[-3]
+    x = df1.iloc[
+        -2
+    ]
+
+    previous = df1.iloc[
+        -3
+    ]
 
     trend = trend_4h(
         df4
     )
 
     tests = [
+
         (
-            trend == "BULLISH",
+            trend
+            == "BULLISH",
             3,
-            "4H bullish"
+            "4H bullish",
         ),
+
         (
-            x["close"] > x["ema50"],
+            x[
+                "close"
+            ]
+            > x[
+                "ema50"
+            ],
             1,
-            "Above EMA50"
+            "Above EMA50",
         ),
+
         (
-            x["ema20"] > x["ema50"],
+            x[
+                "ema20"
+            ]
+            > x[
+                "ema50"
+            ],
             1,
-            "EMA bullish"
+            "EMA bullish",
         ),
+
         (
-            45 <= x["rsi"] < 70,
+            45
+            <= x[
+                "rsi"
+            ]
+            < 70,
             1,
-            f"RSI {x['rsi']:.1f}"
+            f"RSI "
+            f"{x['rsi']:.1f}",
         ),
+
         (
-            x["macd"]
-            > x["macd_signal"],
+            x[
+                "macd"
+            ]
+            > x[
+                "macd_signal"
+            ],
             1,
-            "MACD bullish"
+            "MACD bullish",
         ),
+
         (
-            x["macd_hist"]
-            > previous["macd_hist"],
+            x[
+                "macd_hist"
+            ]
+            > previous[
+                "macd_hist"
+            ],
             1,
-            "Momentum rising"
+            "Momentum rising",
         ),
+
         (
-            x["adx"]
+            x[
+                "adx"
+            ]
             >= BASE_MIN_ADX,
             1,
-            f"ADX {x['adx']:.1f}"
+            f"ADX "
+            f"{x['adx']:.1f}",
         ),
+
         (
-            x["vol_ratio"]
+            x[
+                "vol_ratio"
+            ]
             >= 0.8,
             1,
-            "Volume confirmed"
+            "Volume confirmed",
         ),
     ]
 
     distance = (
+
         abs(
-            x["close"]
-            - x["ema20"]
+            x[
+                "close"
+            ]
+            - x[
+                "ema20"
+            ]
         )
-        / x["close"]
+
+        / x[
+            "close"
+        ]
     )
 
-    if distance <= 0.015:
+    if (
+        distance
+        <= 0.015
+    ):
 
         tests.append(
             (
                 True,
                 1,
-                "EMA20 pullback"
+                "EMA20 pullback",
             )
         )
 
     score = 0
+
     reasons = []
 
     for (
@@ -585,7 +819,9 @@ def score_long(
 
         if ok:
 
-            score += points
+            score += (
+                points
+            )
 
             reasons.append(
                 reason
@@ -597,20 +833,28 @@ def score_long(
     )
 
 
-# =========================
+# ============================================================
 # ENTRY / SL / TP
-# =========================
+# ============================================================
 
-def levels(df):
+def levels(
+    df
+):
 
-    x = df.iloc[-2]
+    x = df.iloc[
+        -2
+    ]
 
     entry = float(
-        x["close"]
+        x[
+            "close"
+        ]
     )
 
     atr = float(
-        x["atr"]
+        x[
+            "atr"
+        ]
     )
 
     recent = df.iloc[
@@ -624,29 +868,50 @@ def levels(df):
     )
 
     sl = min(
+
         entry
-        - (1.5 * atr),
+        - (
+            1.5
+            * atr
+        ),
 
         swing_low
-        - (0.2 * atr)
+        - (
+            0.2
+            * atr
+        )
     )
 
     risk = (
-        entry - sl
+        entry
+        - sl
     )
 
+    if risk <= 0:
+
+        raise ValueError(
+            "Invalid LONG risk calculation"
+        )
+
     tp1 = (
-        entry + risk
+        entry
+        + risk
     )
 
     tp2 = (
         entry
-        + (2 * risk)
+        + (
+            2
+            * risk
+        )
     )
 
     tp3 = (
         entry
-        + (3 * risk)
+        + (
+            3
+            * risk
+        )
     )
 
     return (
@@ -658,9 +923,9 @@ def levels(df):
     )
 
 
-# =========================
+# ============================================================
 # SIGNAL MESSAGE
-# =========================
+# ============================================================
 
 def send_signal(
     symbol,
@@ -679,33 +944,47 @@ def send_signal(
         df
     )
 
-    x = df.iloc[-2]
+    x = df.iloc[
+        -2
+    ]
 
-    reason_text = "\n".join(
-        "• " + reason
-        for reason
-        in reasons
+    reason_text = (
+        "\n".join(
+            "• "
+            + reason
+
+            for reason
+            in reasons
+        )
     )
 
     message = (
+
         f"🟢 <b>FINAL LONG SIGNAL</b>\n\n"
 
         f"💎 <b>{symbol}</b>\n"
 
-        f"🤖 Strategy: E / {VERSION}\n"
+        f"🤖 Strategy: "
+        f"E / {VERSION}\n"
 
-        f"⏱ Entry: 1H | Trend: 4H\n\n"
+        f"⏱ Entry: 1H | "
+        f"Trend: 4H\n\n"
 
-        f"💵 Entry: {entry:.6f}\n"
+        f"💵 Entry: "
+        f"{entry:.6f}\n"
 
-        f"🛑 SL: {sl:.6f}\n"
+        f"🛑 SL: "
+        f"{sl:.6f}\n"
 
-        f"🎯 TP1: {tp1:.6f}\n"
+        f"🎯 TP1: "
+        f"{tp1:.6f}\n"
 
         f"🎯 <b>TP2: "
-        f"{tp2:.6f} ← PRIMARY</b>\n"
+        f"{tp2:.6f} "
+        f"← PRIMARY</b>\n"
 
-        f"🎯 TP3: {tp3:.6f}\n\n"
+        f"🎯 TP3: "
+        f"{tp3:.6f}\n\n"
 
         f"⭐ Score: "
         f"{score}/11 "
@@ -721,8 +1000,9 @@ def send_signal(
 
         f"{reason_text}\n\n"
 
-        f"🧪 Forward-test signal only "
-        f"— no automatic order."
+        f"🧪 Forward-test "
+        f"signal only — "
+        f"no automatic order."
     )
 
     return send_message(
@@ -730,9 +1010,9 @@ def send_signal(
     )
 
 
-# =========================
+# ============================================================
 # FINAL FILTER E
-# =========================
+# ============================================================
 
 def analyze(
     symbol,
@@ -740,7 +1020,8 @@ def analyze(
 ):
 
     print(
-        f"Scanning {symbol}..."
+        f"Scanning "
+        f"{symbol}..."
     )
 
     df1 = indicators(
@@ -769,7 +1050,9 @@ def analyze(
 
         return "data_error"
 
-    x = df1.iloc[-2]
+    x = df1.iloc[
+        -2
+    ]
 
     trend = trend_4h(
         df4
@@ -784,21 +1067,36 @@ def analyze(
     )
 
     print(
+
         f"{symbol} | "
-        f"RSI:{x['rsi']:.1f} | "
-        f"ADX:{x['adx']:.1f} | "
-        f"Score:{score} | "
-        f"Trend:{trend}"
+
+        f"RSI:"
+        f"{x['rsi']:.1f} | "
+
+        f"ADX:"
+        f"{x['adx']:.1f} | "
+
+        f"Score:"
+        f"{score} | "
+
+        f"Trend:"
+        f"{trend}"
     )
 
     qualifies = (
-        trend == "BULLISH"
 
-        and x["adx"]
+        trend
+        == "BULLISH"
+
+        and x[
+            "adx"
+        ]
         >= FINAL_MIN_ADX
 
         and FINAL_MIN_RSI
-        <= x["rsi"]
+        <= x[
+            "rsi"
+        ]
         < FINAL_MAX_RSI
 
         and score
@@ -818,6 +1116,21 @@ def analyze(
         )
 
         return "no_signal"
+
+    # Prevent a new signal if an older
+    # forward-test trade is still open.
+
+    if has_open_trade(
+        symbol,
+        "LONG"
+    ):
+
+        print(
+            "Forward trade still open:",
+            symbol
+        )
+
+        return "duplicate"
 
     if is_duplicate_signal(
         state,
@@ -847,24 +1160,106 @@ def analyze(
 
         return "telegram_error"
 
-    state[symbol] = {
-        "side": "LONG",
-        "entry": float(
-            x["close"]
+    (
+        entry,
+        sl,
+        tp1,
+        tp2,
+        tp3
+    ) = levels(
+        df1
+    )
+
+    tracker_saved = record_signal(
+
+        symbol=symbol,
+
+        side="LONG",
+
+        entry=entry,
+
+        sl=sl,
+
+        tp2=tp2,
+
+        signal_timestamp=int(
+            x[
+                "timestamp"
+            ]
         ),
-        "timestamp": int(
-            x["timestamp"]
+
+        score=score,
+
+        rsi=float(
+            x[
+                "rsi"
+            ]
         ),
-        "score": int(
-            score
+
+        adx=float(
+            x[
+                "adx"
+            ]
         ),
-        "rsi": float(
-            x["rsi"]
-        ),
-        "adx": float(
-            x["adx"]
-        ),
-        "version": VERSION,
+
+        strategy_version=VERSION
+    )
+
+    print(
+        "Forward tracker recorded:",
+        tracker_saved
+    )
+
+    state[
+        symbol
+    ] = {
+
+        "side":
+            "LONG",
+
+        "entry":
+            float(
+                entry
+            ),
+
+        "sl":
+            float(
+                sl
+            ),
+
+        "tp2":
+            float(
+                tp2
+            ),
+
+        "timestamp":
+            int(
+                x[
+                    "timestamp"
+                ]
+            ),
+
+        "score":
+            int(
+                score
+            ),
+
+        "rsi":
+            float(
+                x[
+                    "rsi"
+                ]
+            ),
+
+        "adx":
+            float(
+                x[
+                    "adx"
+                ]
+            ),
+
+        "version":
+            VERSION,
     }
 
     save_state(
@@ -874,21 +1269,24 @@ def analyze(
     return "signal"
 
 
-# =========================
-# MAIN + HEALTH CHECK
-# =========================
+# ============================================================
+# MAIN + HEALTH CHECK + FORWARD TRACKER
+# ============================================================
 
 def main():
 
     print(
+
         f"AI Swing Trade Scanner "
         f"{VERSION} started"
     )
 
     print(
+
         "Filter E: "
         "LONG + ADX>=40 + "
-        "RSI 60-70 + SCORE==9"
+        "RSI 60-70 + "
+        "SCORE==9"
     )
 
     print(
@@ -896,8 +1294,13 @@ def main():
     )
 
     print(
+
         "Mode: SIGNAL ONLY / "
         "FORWARD TEST"
+    )
+
+    print(
+        "Forward tracker: ENABLED"
     )
 
     state = load_state()
@@ -918,23 +1321,63 @@ def main():
         )
 
         send_message(
+
             "🚨 <b>Scanner health error</b>\n"
+
             "Toobit connection failed.\n"
-            f"Version: {VERSION}"
+
+            f"Version: "
+            f"{VERSION}"
         )
 
         return
 
+    # ========================================================
+    # UPDATE EXISTING FORWARD-TEST TRADES
+    # ========================================================
+
+    try:
+
+        closed_now = (
+            update_open_trades(
+                exchange
+            )
+        )
+
+        for trade in closed_now:
+
+            send_message(
+                closed_trade_text(
+                    trade
+                )
+            )
+
+        if closed_now:
+
+            send_message(
+                summary_text()
+            )
+
+    except Exception as error:
+
+        print(
+            "Forward tracker update error:",
+            error
+        )
+
     manual_run = (
+
         os.getenv(
             "GITHUB_EVENT_NAME"
         )
+
         == "workflow_dispatch"
     )
 
     if manual_run:
 
         send_message(
+
             f"✅ <b>AI Swing Trade Scanner "
             f"{VERSION} started</b>\n"
 
@@ -953,15 +1396,27 @@ def main():
 
             "⏱ Analysis: 1H + 4H\n"
 
-            "🔁 Duplicate protection enabled"
+            "🔁 Duplicate protection enabled\n"
+
+            "📒 Forward tracker enabled"
         )
 
     stats = {
-        "signal": 0,
-        "duplicate": 0,
-        "no_signal": 0,
-        "data_error": 0,
-        "telegram_error": 0,
+
+        "signal":
+            0,
+
+        "duplicate":
+            0,
+
+        "no_signal":
+            0,
+
+        "data_error":
+            0,
+
+        "telegram_error":
+            0,
     }
 
     for symbol in SYMBOLS:
@@ -975,7 +1430,9 @@ def main():
 
             if result in stats:
 
-                stats[result] += 1
+                stats[
+                    result
+                ] += 1
 
         except Exception as error:
 
@@ -999,7 +1456,9 @@ def main():
 
     print(
         "Active signal states:",
-        len(state)
+        len(
+            state
+        )
     )
 
     print(
@@ -1012,23 +1471,28 @@ def main():
     )
 
     if (
-        stats["data_error"]
+        stats[
+            "data_error"
+        ]
         >= 5
     ):
 
         send_message(
+
             "⚠️ <b>Scanner health warning</b>\n"
 
             f"Data errors: "
             f"{stats['data_error']} / "
             f"{len(SYMBOLS)}\n"
 
-            f"Version: {VERSION}"
+            f"Version: "
+            f"{VERSION}"
         )
 
     if manual_run:
 
         send_message(
+
             "✅ <b>Manual scan completed</b>\n"
 
             f"New signals: "
@@ -1042,6 +1506,10 @@ def main():
 
             f"Active signal states: "
             f"{len(state)}"
+        )
+
+        send_message(
+            summary_text()
         )
 
 
