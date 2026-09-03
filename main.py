@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import requests
 import ccxt
 import pandas as pd
@@ -12,6 +13,8 @@ TREND_TF = "4h"
 
 MIN_SCORE = 9
 MIN_ADX = 22
+
+STATE_FILE = "signal_state.json"
 
 SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT",
@@ -26,6 +29,72 @@ exchange = ccxt.toobit({
     "timeout": 20000
 })
 
+CHAT_ID = None
+
+
+# =========================
+# SIGNAL STATE
+# =========================
+
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        print("No previous signal state found")
+        return {}
+
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            state = json.load(file)
+
+        print(
+            "Signal state loaded:",
+            len(state),
+            "active signals"
+        )
+
+        return state
+
+    except Exception as error:
+        print("State load error:", error)
+        return {}
+
+
+def save_state(state):
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as file:
+            json.dump(
+                state,
+                file,
+                ensure_ascii=False,
+                indent=2
+            )
+
+    except Exception as error:
+        print("State save error:", error)
+
+
+def clear_signal_state(state, symbol):
+    if symbol in state:
+        print(
+            "Previous signal cleared:",
+            symbol,
+            state[symbol].get("side")
+        )
+
+        state.pop(symbol, None)
+
+
+def is_duplicate_signal(state, symbol, side):
+    previous = state.get(symbol)
+
+    if not previous:
+        return False
+
+    return previous.get("side") == side
+
+
+# =========================
+# TELEGRAM
+# =========================
 
 def clean_token():
     token = (TOKEN or "").strip()
@@ -37,6 +106,11 @@ def clean_token():
 
 
 def get_chat_id():
+    global CHAT_ID
+
+    if CHAT_ID:
+        return CHAT_ID
+
     token = clean_token()
 
     if not token:
@@ -44,7 +118,10 @@ def get_chat_id():
         return None
 
     try:
-        url = f"https://api.telegram.org/bot{token}/getUpdates"
+        url = (
+            f"https://api.telegram.org/"
+            f"bot{token}/getUpdates"
+        )
 
         response = requests.get(
             url,
@@ -75,7 +152,8 @@ def get_chat_id():
             )
 
             if chat.get("id") is not None:
-                return str(chat["id"])
+                CHAT_ID = str(chat["id"])
+                return CHAT_ID
 
     except Exception as error:
         print(
@@ -117,7 +195,14 @@ def send_message(text):
             response.status_code
         )
 
-        return response.status_code == 200
+        if response.status_code != 200:
+            print(
+                "Telegram response:",
+                response.text
+            )
+            return False
+
+        return True
 
     except Exception as error:
         print(
@@ -126,6 +211,10 @@ def send_message(text):
         )
         return False
 
+
+# =========================
+# MARKET DATA
+# =========================
 
 def fetch_data(symbol, timeframe):
     try:
@@ -160,8 +249,13 @@ def fetch_data(symbol, timeframe):
             f"Fetch error {symbol} "
             f"{timeframe}: {error}"
         )
+
         return None
 
+
+# =========================
+# INDICATORS
+# =========================
 
 def indicators(df):
     if df is None or len(df) < 220:
@@ -194,12 +288,8 @@ def indicators(df):
     )
 
     df["macd"] = macd.macd()
-    df["macd_signal"] = (
-        macd.macd_signal()
-    )
-    df["macd_hist"] = (
-        macd.macd_diff()
-    )
+    df["macd_signal"] = macd.macd_signal()
+    df["macd_hist"] = macd.macd_diff()
 
     df["atr"] = (
         ta.volatility.AverageTrueRange(
@@ -234,6 +324,10 @@ def indicators(df):
     )
 
 
+# =========================
+# 4H TREND
+# =========================
+
 def trend_4h(df):
     x = df.iloc[-2]
 
@@ -256,11 +350,11 @@ def trend_4h(df):
     return "NEUTRAL"
 
 
-def score_signal(
-    df1,
-    df4,
-    side
-):
+# =========================
+# SCORE
+# =========================
+
+def score_signal(df1, df4, side):
     x = df1.iloc[-2]
     previous = df1.iloc[-3]
 
@@ -293,8 +387,7 @@ def score_signal(
                 f"RSI {x['rsi']:.1f}"
             ),
             (
-                x["macd"] >
-                x["macd_signal"],
+                x["macd"] > x["macd_signal"],
                 1,
                 "MACD bullish"
             ),
@@ -340,8 +433,7 @@ def score_signal(
                 f"RSI {x['rsi']:.1f}"
             ),
             (
-                x["macd"] <
-                x["macd_signal"],
+                x["macd"] < x["macd_signal"],
                 1,
                 "MACD bearish"
             ),
@@ -377,13 +469,16 @@ def score_signal(
         )
 
     for ok, points, reason in tests:
-
         if ok:
             score += points
             reasons.append(reason)
 
     return score, reasons
 
+
+# =========================
+# ENTRY / SL / TP
+# =========================
 
 def levels(df, side):
     x = df.iloc[-2]
@@ -441,6 +536,10 @@ def levels(df, side):
     )
 
 
+# =========================
+# SEND SIGNAL
+# =========================
+
 def send_signal(
     symbol,
     side,
@@ -491,10 +590,14 @@ def send_signal(
         f"{reason_text}"
     )
 
-    send_message(message)
+    return send_message(message)
 
 
-def analyze(symbol):
+# =========================
+# ANALYZE SYMBOL
+# =========================
+
+def analyze(symbol, state):
     print(
         f"Scanning {symbol}..."
     )
@@ -531,6 +634,8 @@ def analyze(symbol):
         f"Trend: {trend}"
     )
 
+    # Safety filters
+
     if (
         trend == "BULLISH"
         and x["rsi"] >= 70
@@ -538,6 +643,12 @@ def analyze(symbol):
         print(
             "LONG rejected: RSI too high"
         )
+
+        clear_signal_state(
+            state,
+            symbol
+        )
+
         return
 
     if (
@@ -547,6 +658,12 @@ def analyze(symbol):
         print(
             "SHORT rejected: RSI too low"
         )
+
+        clear_signal_state(
+            state,
+            symbol
+        )
+
         return
 
     if (
@@ -559,6 +676,12 @@ def analyze(symbol):
         print(
             "Signal rejected: ADX too weak"
         )
+
+        clear_signal_state(
+            state,
+            symbol
+        )
+
         return
 
     long_score, long_reasons = (
@@ -585,51 +708,94 @@ def analyze(symbol):
         short_score
     )
 
+    side = None
+    score = 0
+    reasons = []
+
     if (
         trend == "BULLISH"
         and long_score >= MIN_SCORE
     ):
-        print(
-            "LONG signal:",
-            symbol
-        )
-
-        send_signal(
-            symbol,
-            "LONG",
-            long_score,
-            long_reasons,
-            df1
-        )
+        side = "LONG"
+        score = long_score
+        reasons = long_reasons
 
     elif (
         trend == "BEARISH"
         and short_score >= MIN_SCORE
     ):
-        print(
-            "SHORT signal:",
-            symbol
-        )
+        side = "SHORT"
+        score = short_score
+        reasons = short_reasons
 
-        send_signal(
-            symbol,
-            "SHORT",
-            short_score,
-            short_reasons,
-            df1
-        )
-
-    else:
+    if side is None:
         print(
             "No strong signal:",
             symbol
         )
 
+        clear_signal_state(
+            state,
+            symbol
+        )
+
+        return
+
+    # Duplicate protection
+
+    if is_duplicate_signal(
+        state,
+        symbol,
+        side
+    ):
+        print(
+            "Duplicate signal skipped:",
+            symbol,
+            side
+        )
+
+        return
+
+    print(
+        "NEW signal detected:",
+        symbol,
+        side
+    )
+
+    sent = send_signal(
+        symbol,
+        side,
+        score,
+        reasons,
+        df1
+    )
+
+    if sent:
+        state[symbol] = {
+            "side": side,
+            "entry": float(x["close"]),
+            "timestamp": int(x["timestamp"])
+        }
+
+        save_state(state)
+
+        print(
+            "Signal state saved:",
+            symbol,
+            side
+        )
+
+
+# =========================
+# MAIN
+# =========================
 
 def main():
     print(
-        "AI Swing Trade Scanner V2.1 started"
+        "AI Swing Trade Scanner V2.2 started"
     )
+
+    state = load_state()
 
     try:
         exchange.load_markets()
@@ -650,15 +816,19 @@ def main():
         == "workflow_dispatch"
     ):
         send_message(
-            "✅ <b>AI Swing Trade Scanner V2.1 started</b>\n"
+            "✅ <b>AI Swing Trade Scanner V2.2 started</b>\n"
             "⏱ Analysis: 1H + 4H\n"
-            "🛡 Strong-signal filters enabled."
+            "🛡 Strong-signal filters enabled\n"
+            "🔁 Duplicate protection enabled"
         )
 
     for symbol in SYMBOLS:
 
         try:
-            analyze(symbol)
+            analyze(
+                symbol,
+                state
+            )
 
         except Exception as error:
             print(
@@ -667,7 +837,14 @@ def main():
                 error
             )
 
+        save_state(state)
+
         time.sleep(0.5)
+
+    print(
+        "Active signal states:",
+        len(state)
+    )
 
     print(
         "All scans completed"
