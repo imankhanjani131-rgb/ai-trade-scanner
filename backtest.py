@@ -24,11 +24,7 @@ exchange = ccxt.toobit({
 
 
 def fetch_history(symbol, timeframe, days):
-
-    ms_per_bar = (
-        exchange.parse_timeframe(timeframe)
-        * 1000
-    )
+    ms_per_bar = exchange.parse_timeframe(timeframe) * 1000
 
     since = (
         exchange.milliseconds()
@@ -38,7 +34,6 @@ def fetch_history(symbol, timeframe, days):
     rows = []
 
     while True:
-
         batch = exchange.fetch_ohlcv(
             symbol,
             timeframe=timeframe,
@@ -51,22 +46,13 @@ def fetch_history(symbol, timeframe, days):
 
         rows.extend(batch)
 
-        next_since = (
-            batch[-1][0]
-            + ms_per_bar
-        )
+        next_since = batch[-1][0] + ms_per_bar
 
-        if (
-            next_since <= since
-            or len(batch) < 1000
-        ):
+        if next_since <= since or len(batch) < 1000:
             break
 
         since = next_since
-
-        time.sleep(
-            exchange.rateLimit / 1000
-        )
+        time.sleep(exchange.rateLimit / 1000)
 
     if not rows:
         return None
@@ -100,68 +86,43 @@ def fetch_history(symbol, timeframe, days):
 
 
 def add_indicators(df):
-
     df = df.copy()
 
-    df["ema20"] = (
-        ta.trend.EMAIndicator(
-            df["close"],
-            20
-        ).ema_indicator()
-    )
+    df["ema20"] = ta.trend.EMAIndicator(
+        df["close"], 20
+    ).ema_indicator()
 
-    df["ema50"] = (
-        ta.trend.EMAIndicator(
-            df["close"],
-            50
-        ).ema_indicator()
-    )
+    df["ema50"] = ta.trend.EMAIndicator(
+        df["close"], 50
+    ).ema_indicator()
 
-    df["ema200"] = (
-        ta.trend.EMAIndicator(
-            df["close"],
-            200
-        ).ema_indicator()
-    )
+    df["ema200"] = ta.trend.EMAIndicator(
+        df["close"], 200
+    ).ema_indicator()
 
-    df["rsi"] = (
-        ta.momentum.RSIIndicator(
-            df["close"],
-            14
-        ).rsi()
-    )
+    df["rsi"] = ta.momentum.RSIIndicator(
+        df["close"], 14
+    ).rsi()
 
-    macd = ta.trend.MACD(
-        df["close"]
-    )
+    macd = ta.trend.MACD(df["close"])
 
     df["macd"] = macd.macd()
+    df["macd_signal"] = macd.macd_signal()
+    df["macd_hist"] = macd.macd_diff()
 
-    df["macd_signal"] = (
-        macd.macd_signal()
-    )
+    df["atr"] = ta.volatility.AverageTrueRange(
+        df["high"],
+        df["low"],
+        df["close"],
+        14
+    ).average_true_range()
 
-    df["macd_hist"] = (
-        macd.macd_diff()
-    )
-
-    df["atr"] = (
-        ta.volatility.AverageTrueRange(
-            df["high"],
-            df["low"],
-            df["close"],
-            14
-        ).average_true_range()
-    )
-
-    df["adx"] = (
-        ta.trend.ADXIndicator(
-            df["high"],
-            df["low"],
-            df["close"],
-            14
-        ).adx()
-    )
+    df["adx"] = ta.trend.ADXIndicator(
+        df["high"],
+        df["low"],
+        df["close"],
+        14
+    ).adx()
 
     df["vol_ma"] = (
         df["volume"]
@@ -170,15 +131,13 @@ def add_indicators(df):
     )
 
     df["vol_ratio"] = (
-        df["volume"]
-        / df["vol_ma"]
+        df["volume"] / df["vol_ma"]
     )
 
     return df
 
 
 def prepare(symbol):
-
     h1 = fetch_history(
         symbol,
         "1h",
@@ -244,21 +203,18 @@ def prepare(symbol):
 
 
 def trend4(row):
-
     if (
         row["close4"] > row["ema200_4"]
-        and row["ema20_4"]
-        > row["ema50_4"]
-        > row["ema200_4"]
+        and row["ema20_4"] > row["ema50_4"]
+        and row["ema50_4"] > row["ema200_4"]
         and row["rsi_4"] >= 50
     ):
         return "BULLISH"
 
     if (
         row["close4"] < row["ema200_4"]
-        and row["ema20_4"]
-        < row["ema50_4"]
-        < row["ema200_4"]
+        and row["ema20_4"] < row["ema50_4"]
+        and row["ema50_4"] < row["ema200_4"]
         and row["rsi_4"] <= 50
     ):
         return "BEARISH"
@@ -266,123 +222,51 @@ def trend4(row):
     return "NEUTRAL"
 
 
-def score(
-    df,
-    i,
-    side,
-    trend
-):
-
+def score_signal(df, i, side, trend):
     x = df.iloc[i]
     p = df.iloc[i - 1]
 
     points = 0
 
     if side == "LONG":
-
         tests = [
-            (
-                trend == "BULLISH",
-                3
-            ),
-            (
-                x["close"] > x["ema50"],
-                1
-            ),
-            (
-                x["ema20"] > x["ema50"],
-                1
-            ),
-            (
-                45 <= x["rsi"] < 70,
-                1
-            ),
-            (
-                x["macd"] >
-                x["macd_signal"],
-                1
-            ),
-            (
-                x["macd_hist"] >
-                p["macd_hist"],
-                1
-            ),
-            (
-                x["adx"] >= MIN_ADX,
-                1
-            ),
-            (
-                x["vol_ratio"] >= 0.8,
-                1
-            )
+            (trend == "BULLISH", 3),
+            (x["close"] > x["ema50"], 1),
+            (x["ema20"] > x["ema50"], 1),
+            (45 <= x["rsi"] < 70, 1),
+            (x["macd"] > x["macd_signal"], 1),
+            (x["macd_hist"] > p["macd_hist"], 1),
+            (x["adx"] >= MIN_ADX, 1),
+            (x["vol_ratio"] >= 0.8, 1)
         ]
 
     else:
-
         tests = [
-            (
-                trend == "BEARISH",
-                3
-            ),
-            (
-                x["close"] < x["ema50"],
-                1
-            ),
-            (
-                x["ema20"] < x["ema50"],
-                1
-            ),
-            (
-                30 < x["rsi"] <= 55,
-                1
-            ),
-            (
-                x["macd"] <
-                x["macd_signal"],
-                1
-            ),
-            (
-                x["macd_hist"] <
-                p["macd_hist"],
-                1
-            ),
-            (
-                x["adx"] >= MIN_ADX,
-                1
-            ),
-            (
-                x["vol_ratio"] >= 0.8,
-                1
-            )
+            (trend == "BEARISH", 3),
+            (x["close"] < x["ema50"], 1),
+            (x["ema20"] < x["ema50"], 1),
+            (30 < x["rsi"] <= 55, 1),
+            (x["macd"] < x["macd_signal"], 1),
+            (x["macd_hist"] < p["macd_hist"], 1),
+            (x["adx"] >= MIN_ADX, 1),
+            (x["vol_ratio"] >= 0.8, 1)
         ]
 
     distance = abs(
-        x["close"]
-        - x["ema20"]
+        x["close"] - x["ema20"]
     ) / x["close"]
 
     if distance <= 0.015:
-        tests.append(
-            (
-                True,
-                1
-            )
-        )
+        tests.append((True, 1))
 
     for ok, pts in tests:
-
         if ok:
             points += pts
 
     return points
 
 
-def levels(
-    df,
-    i,
-    side
-):
-
+def levels(df, i, side):
     x = df.iloc[i]
 
     recent = df.iloc[
@@ -390,16 +274,10 @@ def levels(
         i + 1
     ]
 
-    entry = float(
-        x["close"]
-    )
-
-    atr = float(
-        x["atr"]
-    )
+    entry = float(x["close"])
+    atr = float(x["atr"])
 
     if side == "LONG":
-
         swing = float(
             recent["low"].min()
         )
@@ -418,7 +296,6 @@ def levels(
         ]
 
     else:
-
         swing = float(
             recent["high"].max()
         )
@@ -436,27 +313,17 @@ def levels(
             entry - 3 * risk
         ]
 
-    return (
-        entry,
-        sl,
-        tps
-    )
+    return entry, sl, tps
 
 
-def find_candidates(
-    symbol,
-    df
-):
-
+def find_candidates(symbol, df):
     candidates = []
-
     active_side = None
 
     for i in range(
         2,
         len(df) - 1
     ):
-
         x = df.iloc[i]
 
         tr = trend4(x)
@@ -469,8 +336,7 @@ def find_candidates(
             and x["rsi"] < 70
             and x["adx"] >= MIN_ADX
         ):
-
-            sc = score(
+            sc = score_signal(
                 df,
                 i,
                 "LONG",
@@ -485,8 +351,7 @@ def find_candidates(
             and x["rsi"] > 30
             and x["adx"] >= MIN_ADX
         ):
-
-            sc = score(
+            sc = score_signal(
                 df,
                 i,
                 "SHORT",
@@ -497,9 +362,7 @@ def find_candidates(
                 side = "SHORT"
 
         if side is None:
-
             active_side = None
-
             continue
 
         if side == active_side:
@@ -511,30 +374,27 @@ def find_candidates(
             side
         )
 
-        candidates.append(
-            {
-                "symbol": symbol,
-                "i": i,
-                "time": x["signal_time"],
-                "side": side,
-                "score": sc,
-                "entry": entry,
-                "sl": sl,
-                "tps": tps
-            }
-        )
+        candidates.append({
+            "symbol": symbol,
+            "i": i,
+            "time": x["signal_time"],
+            "side": side,
+            "score": int(sc),
+            "rsi": float(x["rsi"]),
+            "adx": float(x["adx"]),
+            "vol_ratio": float(x["vol_ratio"]),
+            "trend": tr,
+            "entry": entry,
+            "sl": sl,
+            "tps": tps
+        })
 
         active_side = side
 
     return candidates
 
 
-def simulate(
-    df,
-    trade,
-    target_no
-):
-
+def simulate(df, trade, target_no):
     entry = trade["entry"]
     sl = trade["sl"]
 
@@ -547,8 +407,7 @@ def simulate(
     )
 
     end_i = min(
-        trade["i"]
-        + MAX_HOLD_HOURS,
+        trade["i"] + MAX_HOLD_HOURS,
         len(df) - 1
     )
 
@@ -556,11 +415,9 @@ def simulate(
         trade["i"] + 1,
         end_i + 1
     ):
-
         bar = df.iloc[j]
 
         if trade["side"] == "LONG":
-
             hit_sl = (
                 bar["low"] <= sl
             )
@@ -570,7 +427,6 @@ def simulate(
             )
 
         else:
-
             hit_sl = (
                 bar["high"] >= sl
             )
@@ -580,7 +436,6 @@ def simulate(
             )
 
         if hit_sl and hit_tp:
-
             return (
                 -1.0,
                 j,
@@ -588,7 +443,6 @@ def simulate(
             )
 
         if hit_sl:
-
             return (
                 -1.0,
                 j,
@@ -596,7 +450,6 @@ def simulate(
             )
 
         if hit_tp:
-
             return (
                 float(target_no),
                 j,
@@ -608,13 +461,11 @@ def simulate(
     )
 
     if trade["side"] == "LONG":
-
         r = (
             exit_price - entry
         ) / risk
 
     else:
-
         r = (
             entry - exit_price
         ) / risk
@@ -626,18 +477,9 @@ def simulate(
     )
 
 
-def summarize(
-    results,
-    target_no
-):
-
+def calc_metrics(results):
     if not results:
-
-        print(
-            f"\nTP{target_no}: no trades"
-        )
-
-        return
+        return None
 
     rs = [
         x["r"]
@@ -651,6 +493,11 @@ def summarize(
 
     losses = sum(
         r < 0
+        for r in rs
+    )
+
+    flats = sum(
+        r == 0
         for r in rs
     )
 
@@ -669,14 +516,8 @@ def summarize(
     )
 
     if gross_loss > 0:
-
-        pf = (
-            gross_win
-            / gross_loss
-        )
-
+        pf = gross_win / gross_loss
     else:
-
         pf = float("inf")
 
     equity = 100.0
@@ -684,7 +525,6 @@ def summarize(
     max_dd = 0.0
 
     for r in rs:
-
         equity *= (
             1
             + RISK_PER_TRADE * r
@@ -704,9 +544,33 @@ def summarize(
             dd
         )
 
+    return {
+        "trades": len(results),
+        "wins": wins,
+        "losses": losses,
+        "flats": flats,
+        "win_rate": (
+            wins
+            / len(results)
+            * 100
+        ),
+        "net_r": sum(rs),
+        "avg_r": (
+            sum(rs)
+            / len(rs)
+        ),
+        "pf": pf,
+        "max_dd": max_dd,
+        "ending_equity": equity
+    }
+
+
+def summarize(results, target_no):
+    m = calc_metrics(results)
+
     print(
         "\n"
-        + "=" * 46
+        + "=" * 48
     )
 
     print(
@@ -714,52 +578,61 @@ def summarize(
     )
 
     print(
-        "=" * 46
+        "=" * 48
     )
+
+    if m is None:
+        print("No trades")
+        return
 
     print(
         "Trades:",
-        len(results)
+        m["trades"]
     )
 
     print(
         "Wins:",
-        wins
+        m["wins"]
     )
 
     print(
         "Losses:",
-        losses
+        m["losses"]
+    )
+
+    print(
+        "Flat:",
+        m["flats"]
     )
 
     print(
         "Win rate:",
-        f"{wins / len(results) * 100:.2f}%"
+        f'{m["win_rate"]:.2f}%'
     )
 
     print(
         "Net R:",
-        f"{sum(rs):.2f}R"
+        f'{m["net_r"]:.2f}R'
     )
 
     print(
         "Avg R:",
-        f"{sum(rs) / len(rs):.3f}R"
+        f'{m["avg_r"]:.3f}R'
     )
 
     print(
         "Profit factor:",
-        f"{pf:.2f}"
+        f'{m["pf"]:.2f}'
     )
 
     print(
         "Max drawdown:",
-        f"{max_dd:.2f}%"
+        f'{m["max_dd"]:.2f}%'
     )
 
     print(
         "Ending equity:",
-        f"{equity:.2f}"
+        f'{m["ending_equity"]:.2f}'
     )
 
     print(
@@ -767,10 +640,205 @@ def summarize(
     )
 
 
-def main():
+def rsi_bucket(value):
+    if value < 40:
+        return "RSI <40"
+
+    if value < 50:
+        return "RSI 40-49.9"
+
+    if value < 60:
+        return "RSI 50-59.9"
+
+    if value < 70:
+        return "RSI 60-69.9"
+
+    return "RSI 70+"
+
+
+def adx_bucket(value):
+    if value < 25:
+        return "ADX 22-24.9"
+
+    if value < 30:
+        return "ADX 25-29.9"
+
+    if value < 40:
+        return "ADX 30-39.9"
+
+    return "ADX 40+"
+
+
+def score_bucket(value):
+    if value <= 9:
+        return "Score 9"
+
+    if value == 10:
+        return "Score 10"
+
+    return "Score 11+"
+
+
+def print_group_breakdown(
+    results,
+    key_func,
+    title,
+    min_trades=1
+):
+    groups = {}
+
+    for row in results:
+        key = key_func(row)
+
+        groups.setdefault(
+            key,
+            []
+        ).append(row)
+
+    rows = []
+
+    for key, items in groups.items():
+        m = calc_metrics(items)
+
+        if (
+            m
+            and m["trades"] >= min_trades
+        ):
+            rows.append(
+                (key, m)
+            )
+
+    rows.sort(
+        key=lambda x: x[1]["net_r"],
+        reverse=True
+    )
 
     print(
-        "AI Trade Scanner V2.2 - BACKTEST"
+        "\n"
+        + "-" * 72
+    )
+
+    print(title)
+
+    print(
+        "-" * 72
+    )
+
+    if not rows:
+        print("No data")
+        return
+
+    for key, m in rows:
+        print(
+            f"{key:16} | "
+            f"T:{m['trades']:3d} | "
+            f"WR:{m['win_rate']:6.2f}% | "
+            f"PF:{m['pf']:5.2f} | "
+            f"NetR:{m['net_r']:7.2f}R | "
+            f"AvgR:{m['avg_r']:6.3f}R"
+        )
+
+
+def detailed_tp2_report(results):
+    print(
+        "\n"
+        + "#" * 72
+    )
+
+    print(
+        "DETAILED TP2 DIAGNOSTICS"
+    )
+
+    print(
+        "#" * 72
+    )
+
+    print_group_breakdown(
+        results,
+        lambda x: x["side"],
+        "LONG vs SHORT"
+    )
+
+    print_group_breakdown(
+        results,
+        lambda x: x["symbol"],
+        "PER SYMBOL",
+        min_trades=3
+    )
+
+    print_group_breakdown(
+        results,
+        lambda x: rsi_bucket(
+            x["rsi"]
+        ),
+        "RSI BUCKETS"
+    )
+
+    print_group_breakdown(
+        results,
+        lambda x: adx_bucket(
+            x["adx"]
+        ),
+        "ADX BUCKETS"
+    )
+
+    print_group_breakdown(
+        results,
+        lambda x: score_bucket(
+            x["score"]
+        ),
+        "SCORE BUCKETS"
+    )
+
+
+def run_target(
+    candidates,
+    data,
+    target_no
+):
+    blocked_until = {}
+    results = []
+
+    for trade in candidates:
+        symbol = trade["symbol"]
+
+        if (
+            trade["i"]
+            <= blocked_until.get(
+                symbol,
+                -1
+            )
+        ):
+            continue
+
+        r, exit_i, reason = simulate(
+            data[symbol],
+            trade,
+            target_no
+        )
+
+        blocked_until[
+            symbol
+        ] = exit_i
+
+        results.append({
+            "symbol": symbol,
+            "time": trade["time"],
+            "side": trade["side"],
+            "score": trade["score"],
+            "rsi": trade["rsi"],
+            "adx": trade["adx"],
+            "vol_ratio": trade["vol_ratio"],
+            "r": r,
+            "exit": reason
+        })
+
+    return results
+
+
+def main():
+    print(
+        "AI Trade Scanner V2.2 - BACKTEST + DIAGNOSTICS"
     )
 
     print(
@@ -784,27 +852,32 @@ def main():
         len(SYMBOLS)
     )
 
+    print(
+        "Min score:",
+        MIN_SCORE
+    )
+
+    print(
+        "Min ADX:",
+        MIN_ADX
+    )
+
     data = {}
     candidates = []
 
     for symbol in SYMBOLS:
-
         print(
             "\nLoading",
             symbol
         )
 
         try:
-
-            df = prepare(
-                symbol
-            )
+            df = prepare(symbol)
 
             if (
                 df is None
                 or len(df) < 300
             ):
-
                 print(
                     "Skipped - not enough data"
                 )
@@ -828,7 +901,6 @@ def main():
             )
 
         except Exception as error:
-
             print(
                 "Error:",
                 symbol,
@@ -844,51 +916,30 @@ def main():
         len(candidates)
     )
 
+    tp2_results = None
+
     for target_no in (
         1,
         2,
         3
     ):
-
-        blocked_until = {}
-        results = []
-
-        for trade in candidates:
-
-            symbol = trade["symbol"]
-
-            if (
-                trade["i"]
-                <= blocked_until.get(
-                    symbol,
-                    -1
-                )
-            ):
-                continue
-
-            r, exit_i, reason = simulate(
-                data[symbol],
-                trade,
-                target_no
-            )
-
-            blocked_until[
-                symbol
-            ] = exit_i
-
-            results.append(
-                {
-                    "symbol": symbol,
-                    "time": trade["time"],
-                    "side": trade["side"],
-                    "r": r,
-                    "exit": reason
-                }
-            )
+        results = run_target(
+            candidates,
+            data,
+            target_no
+        )
 
         summarize(
             results,
             target_no
+        )
+
+        if target_no == 2:
+            tp2_results = results
+
+    if tp2_results is not None:
+        detailed_tp2_report(
+            tp2_results
         )
 
     print(
