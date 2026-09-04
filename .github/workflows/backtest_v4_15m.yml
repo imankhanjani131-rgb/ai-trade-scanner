@@ -1,0 +1,24 @@
+name: V4 15m Backtest
+
+on:
+  workflow_dispatch:
+
+jobs:
+  backtest-v4-15m:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests pandas ta
+
+      - name: Run V4 15m backtest
+        run: python backtest_v4_15m.py
