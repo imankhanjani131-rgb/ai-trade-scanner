@@ -1,0 +1,40 @@
+name: AI Trade Scanner V4
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+concurrency:
+  group: ai-trade-scanner-v4
+  cancel-in-progress: false
+
+jobs:
+  run-v4-scanner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore V4 signal state
+        uses: actions/cache@v4
+        with:
+          path: v4_signal_state.json
+          key: v4-signal-state-${{ github.run_id }}
+          restore-keys: |
+            v4-signal-state-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests ccxt pandas ta
+
+      - name: Run V4 scanner
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python main_v4.py
