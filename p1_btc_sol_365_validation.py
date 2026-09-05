@@ -4,11 +4,6 @@ import pandas as pd
 import backtest_v42_super_pump as core
 import p1_core_majors_tp as p1
 
-
-# ============================================================
-# P1 BTC + SOL 365D INDEPENDENT VALIDATION
-# ============================================================
-
 VERSION = "P1-BTC-SOL-365D-OOS-V2"
 
 SYMBOLS = [
@@ -18,26 +13,13 @@ SYMBOLS = [
 
 PROFILE = "P1_4H_CONFIRM"
 
-# Full validation period
 TEST_DAYS = 365
-
-# Extra history for indicator warmup
 FETCH_DAYS = 410
-
-# The recent period was already used when BTC/SOL were selected
 RECENT_DAYS = 180
-
-
-# ============================================================
-# ORIGINAL P1 SETTINGS - UNCHANGED
-# ============================================================
 
 core.VERSION = VERSION
 core.TEST_DAYS = TEST_DAYS
 core.FETCH_DAYS = FETCH_DAYS
-
-# 410 days x 288 five-minute candles ~= 118,080 candles
-# 1250 pages x 100 candles gives enough capacity
 core.MAX_PAGES = 1250
 core.REQUEST_DELAY = 0.05
 
@@ -53,12 +35,7 @@ core.PROFILES = {
 }
 
 
-# ============================================================
-# METRICS
-# ============================================================
-
 def pf_text(value):
-
     if value is None:
         return "-"
 
@@ -69,7 +46,6 @@ def pf_text(value):
 
 
 def metrics(trades):
-
     if not trades:
         return None
 
@@ -103,20 +79,13 @@ def metrics(trades):
     )
 
     if gross_loss > 0:
-
-        pf = (
-            gross_profit
-            / gross_loss
-        )
+        pf = gross_profit / gross_loss
 
     elif gross_profit > 0:
-
         pf = float("inf")
 
     else:
-
         pf = 0.0
-
 
     equity = 100.0
     peak = 100.0
@@ -139,19 +108,13 @@ def metrics(trades):
         if peak > 0:
 
             dd = (
-                (
-                    peak
-                    - equity
-                )
-                / peak
-                * 100.0
-            )
+                peak - equity
+            ) / peak * 100.0
 
             max_dd = max(
                 max_dd,
                 dd
             )
-
 
     return {
         "trades": len(rs),
@@ -184,10 +147,6 @@ def show_metrics(name, m):
     )
 
 
-# ============================================================
-# PERIOD SPLIT
-# ============================================================
-
 def split_periods(
     trades,
     recent_start
@@ -208,10 +167,6 @@ def split_periods(
     return older, recent
 
 
-# ============================================================
-# HISTORY CHECK
-# ============================================================
-
 def history_ok(
     symbol,
     h5
@@ -228,7 +183,6 @@ def history_ok(
 
         return False
 
-
     start_time = h5.iloc[0][
         "datetime"
     ]
@@ -242,13 +196,11 @@ def history_ok(
         - start_time
     ).total_seconds() / 86400
 
-
     print(
         f"{symbol} | "
         f"usable 5m coverage="
         f"{coverage:.1f} days"
     )
-
 
     if coverage < TEST_DAYS:
 
@@ -258,21 +210,12 @@ def history_ok(
 
         return False
 
-
     print(
         "HISTORY CHECK: PASS"
     )
 
     return True
 
-
-# ============================================================
-# SPLIT EXIT
-# SAME P1 ENTRIES
-# 50% AT 1R
-# 50% AT 2R
-# BREAKEVEN AFTER TP1
-# ============================================================
 
 def build_split_trades(
     current,
@@ -281,13 +224,11 @@ def build_split_trades(
 
     split = []
 
-
     for trade in current:
 
         signal_time = (
             trade["time"]
         )
-
 
         matches = h5.index[
             h5["signal_time"]
@@ -295,15 +236,12 @@ def build_split_trades(
             signal_time
         ]
 
-
         if len(matches) == 0:
             continue
-
 
         i = int(
             matches[0]
         )
-
 
         outcome = p1.simulate_split(
             h5,
@@ -316,15 +254,12 @@ def build_split_trades(
             ),
         )
 
-
         if outcome is None:
             continue
-
 
         new_trade = dict(
             trade
         )
-
 
         new_trade["r"] = float(
             outcome["r"]
@@ -342,18 +277,12 @@ def build_split_trades(
             outcome["tp2"]
         )
 
-
         split.append(
             new_trade
         )
 
-
     return split
 
-
-# ============================================================
-# MAIN
-# ============================================================
 
 def main():
 
@@ -369,7 +298,6 @@ def main():
     print(
         "#" * 100
     )
-
 
     print(
         f"Version: {VERSION}"
@@ -394,42 +322,6 @@ def main():
         )
     )
 
-
-    print()
-
-    print(
-        "SPLIT EXIT:"
-    )
-
-    print(
-        "50% at 1R + "
-        "50% at 2R + "
-        "breakeven after TP1"
-    )
-
-
-    print()
-
-    print(
-        "IMPORTANT:"
-    )
-
-    print(
-        "RECENT 180 DAYS were already "
-        "used when BTC and SOL were selected."
-    )
-
-    print(
-        "OLDER approximately 185 DAYS "
-        "is the independent OOS validation."
-    )
-
-    print(
-        "The final decision must rely mainly "
-        "on the OLDER/OOS section."
-    )
-
-
     all_current = []
     all_split = []
 
@@ -437,17 +329,13 @@ def main():
 
     data_end_times = []
 
-
-    # ========================================================
-    # DOWNLOAD + TEST EACH SYMBOL
-    # ========================================================
-
     for number, symbol in enumerate(
         SYMBOLS,
         1
     ):
 
         print()
+
         print(
             "=" * 100
         )
@@ -461,11 +349,9 @@ def main():
             "=" * 100
         )
 
-
         prepared = core.prepare_symbol(
             symbol
         )
-
 
         if prepared is None:
 
@@ -475,14 +361,12 @@ def main():
 
             continue
 
-
         (
             h5,
             h15,
             h1,
             h4,
         ) = prepared
-
 
         if not history_ok(
             symbol,
@@ -496,19 +380,11 @@ def main():
 
             continue
 
-
-        data_end = h5.iloc[-1][
-            "signal_time"
-        ]
-
         data_end_times.append(
-            data_end
+            h5.iloc[-1][
+                "datetime"
+            ]
         )
-
-
-        # --------------------------------
-        # ORIGINAL P1
-        # --------------------------------
 
         current = core.find_trades(
             symbol,
@@ -519,16 +395,10 @@ def main():
             PROFILE,
         )
 
-
-        # --------------------------------
-        # SAME ENTRIES + SPLIT EXIT
-        # --------------------------------
-
         split = build_split_trades(
             current,
             h5
         )
-
 
         all_current.extend(
             current
@@ -538,12 +408,10 @@ def main():
             split
         )
 
-
         symbol_results[symbol] = {
             "current": current,
             "split": split,
         }
-
 
         print()
 
@@ -557,21 +425,16 @@ def main():
             metrics(split)
         )
 
-
-    # ========================================================
-    # DATA VALIDATION
-    # ========================================================
-
     if not data_end_times:
 
         print()
+
         print(
             "VERDICT: FAIL - "
             "NO VALID MARKET DATA"
         )
 
         return
-
 
     test_end = max(
         data_end_times
@@ -593,8 +456,8 @@ def main():
         )
     )
 
-
     print()
+
     print(
         "#" * 100
     )
@@ -619,11 +482,6 @@ def main():
         f"TEST END:     {test_end}"
     )
 
-
-    # ========================================================
-    # PERIOD SPLIT - ALL SYMBOLS
-    # ========================================================
-
     (
         current_older,
         current_recent,
@@ -631,7 +489,6 @@ def main():
         all_current,
         recent_start
     )
-
 
     (
         split_older,
@@ -641,12 +498,8 @@ def main():
         recent_start
     )
 
-
-    # ========================================================
-    # FINAL - FULL PERIOD
-    # ========================================================
-
     print()
+
     print(
         "#" * 100
     )
@@ -659,8 +512,8 @@ def main():
         "#" * 100
     )
 
-
     print()
+
     print(
         "FULL 365 DAYS"
     )
@@ -679,12 +532,8 @@ def main():
         )
     )
 
-
-    # ========================================================
-    # OOS / OLDER PERIOD
-    # ========================================================
-
     print()
+
     print(
         "OLDER ~185 DAYS "
         "(INDEPENDENT / OOS)"
@@ -704,12 +553,8 @@ def main():
         )
     )
 
-
-    # ========================================================
-    # RECENT PERIOD
-    # ========================================================
-
     print()
+
     print(
         "RECENT 180 DAYS "
         "(ALREADY SEEN PERIOD)"
@@ -729,12 +574,8 @@ def main():
         )
     )
 
-
-    # ========================================================
-    # OOS PER SYMBOL
-    # ========================================================
-
     print()
+
     print(
         "-" * 100
     )
@@ -747,9 +588,7 @@ def main():
         "-" * 100
     )
 
-
     positive_symbols = 0
-
 
     for symbol in SYMBOLS:
 
@@ -757,16 +596,15 @@ def main():
             symbol
         )
 
-
         if not data:
 
             print()
+
             print(
                 f"{symbol}: NO VALID DATA"
             )
 
             continue
-
 
         current_old, _ = split_periods(
             data["current"],
@@ -778,7 +616,6 @@ def main():
             recent_start
         )
 
-
         current_m = metrics(
             current_old
         )
@@ -787,12 +624,11 @@ def main():
             split_old
         )
 
-
         print()
+
         print(
             symbol
         )
-
 
         show_metrics(
             "CURRENT OOS",
@@ -804,7 +640,6 @@ def main():
             split_m
         )
 
-
         if (
             split_m is not None
             and
@@ -813,12 +648,8 @@ def main():
 
             positive_symbols += 1
 
-
-    # ========================================================
-    # QUALITY DECISION
-    # ========================================================
-
     print()
+
     print(
         "#" * 100
     )
@@ -831,16 +662,14 @@ def main():
         "#" * 100
     )
 
-
     oos = metrics(
         split_older
     )
 
-
     if oos is None:
 
         print(
-            "OOS positive symbols: "
+            f"OOS positive symbols: "
             f"{positive_symbols}/2"
         )
 
@@ -851,22 +680,15 @@ def main():
 
         return
 
-
     print(
-        "OOS positive symbols: "
+        f"OOS positive symbols: "
         f"{positive_symbols}/2"
     )
 
-
     print(
-        "OOS sample trades: "
+        f"OOS sample trades: "
         f"{oos['trades']}"
     )
-
-
-    # --------------------------------
-    # QUALITY GATES
-    # --------------------------------
 
     enough_sample = (
         oos["trades"] >= 10
@@ -892,8 +714,8 @@ def main():
         positive_symbols == 2
     )
 
-
     print()
+
     print(
         "CHECKS:"
     )
@@ -928,18 +750,12 @@ def main():
         f"{symbols_pass}"
     )
 
-
-    # ========================================================
-    # FINAL VERDICT
-    # ========================================================
-
     if not enough_sample:
 
         verdict = (
             "INCONCLUSIVE - "
             "OOS SAMPLE TOO SMALL"
         )
-
 
     elif (
         pf_pass
@@ -959,7 +775,6 @@ def main():
             "INDEPENDENT OOS PERIOD"
         )
 
-
     elif (
         oos["pf"] >= 1.10
         and
@@ -974,7 +789,6 @@ def main():
             "NOT STRONG ENOUGH"
         )
 
-
     else:
 
         verdict = (
@@ -983,37 +797,10 @@ def main():
             "SURVIVE OOS TEST"
         )
 
-
     print()
+
     print(
         f"VERDICT: {verdict}"
-    )
-
-
-    print()
-    print(
-        "IMPORTANT:"
-    )
-
-    print(
-        "Do NOT judge this test from "
-        "RECENT 180 days alone."
-    )
-
-    print(
-        "OLDER/OOS is the deciding period "
-        "because BTC and SOL were selected "
-        "after seeing the recent results."
-    )
-
-    print(
-        "P1 entry rules were NOT relaxed "
-        "for this validation."
-    )
-
-    print(
-        "This validation compares the "
-        "original exit with the SPLIT exit."
     )
 
 
