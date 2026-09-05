@@ -21,4 +21,22 @@ jobs:
         run: pip install requests pandas ta
 
       - name: Run V4 exit comparison
-        run: python backtest_v4_exit_compare.py
+        shell: bash
+        run: |
+          set -o pipefail
+          python backtest_v4_exit_compare.py | tee v4_exit_output.txt
+
+      - name: Show A B C results in Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## V4 Exit Model Comparison"
+            echo '```text'
+            awk '
+              /V4 EXIT MODEL COMPARISON/ {show=1}
+              /PER-SYMBOL NET R COMPARISON/ {show=0}
+              show {print}
+            ' v4_exit_output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
