@@ -1,0 +1,42 @@
+name: V4.1 Pump Core Backtest
+
+on:
+  workflow_dispatch:
+
+jobs:
+  v41-pump-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests pandas ta
+
+      - name: Run V4.1 Pump Core backtest
+        shell: bash
+        run: |
+          set -o pipefail
+          python backtest_v41_pump.py | tee v41_pump_output.txt
+
+      - name: Show results in Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## V4.1 Pump Core Backtest"
+            echo '```text'
+            awk '
+              /V4.1 PUMP CORE - FINAL RANKING/ {show=1}
+              /PER-SYMBOL PUMP RESULTS/ {show=0}
+              show {print}
+            ' v41_pump_output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
