@@ -5,13 +5,8 @@ import pandas as pd
 import backtest_v42_super_pump as core
 
 
-# ============================================================
-# PUMP REPLAY P1
-# ============================================================
+VERSION = "PUMP-REPLAY-P1-TOOBIT-V2"
 
-VERSION = "PUMP-REPLAY-P1-TOOBIT"
-
-# ارزهایی که با عکس، پامپ واقعی آنها را ثبت کردیم
 SYMBOLS = [
     "FLOCK/USDT",
     "DASH/USDT",
@@ -22,27 +17,39 @@ SYMBOLS = [
     "B/USDT",
 ]
 
-# فقط آخرین چند روز را برای پیدا کردن پامپ واقعی بررسی می‌کنیم
-EVENT_LOOKBACK_DAYS = 7
-
-# از یک نقطه تا 24 ساعت بعد، بیشترین حرکت را پیدا می‌کنیم
-PUMP_WINDOW_HOURS = 24
-
-# حداقل رشد برای اینکه یک حرکت را Pump حساب کنیم
-MIN_PUMP_PCT = 12.0
-
-# سیگنال‌های حداکثر 12 ساعت قبل از شروع پامپ هم بررسی شوند
-PRE_PUMP_HOURS = 12
-
-
-# ============================================================
-# P1_4H_CONFIRM
-# همان پروفایل برتر V4.3
-# ============================================================
-
 PROFILE_NAME = "P1_4H_CONFIRM"
 
+EVENT_LOOKBACK_DAYS = 7
+PUMP_WINDOW_HOURS = 24
+MIN_PUMP_PCT = 12.0
+PRE_PUMP_HOURS = 12
+
+BASE_URL = "https://api.toobit.com"
+
+INTERVAL_MS = {
+    "5m": 5 * 60 * 1000,
+    "15m": 15 * 60 * 1000,
+    "1h": 60 * 60 * 1000,
+    "4h": 4 * 60 * 60 * 1000,
+}
+
+LOOKBACK_DAYS = {
+    "5m": 14,
+    "15m": 10,
+    "1h": 20,
+    "4h": 60,
+}
+
+session = requests.Session()
+_contract_map = None
+
+
+# ============================================================
+# KEEP P1 EXACTLY THE SAME
+# ============================================================
+
 core.VERSION = VERSION
+core.TEST_DAYS = 14
 
 core.PROFILES = {
     PROFILE_NAME: {
@@ -55,47 +62,36 @@ core.PROFILES = {
     }
 }
 
-core.SYMBOLS = SYMBOLS
-
 
 # ============================================================
-# TOOBIT DATA
+# TOOBIT REQUESTS
 # ============================================================
-
-BASE_URL = "https://api.toobit.com"
-
-session = requests.Session()
-
-_contract_map = None
-
 
 def get_json(path, params=None):
 
     last_error = None
 
-    for attempt in range(3):
+    for attempt in range(4):
 
         try:
 
-            response = session.get(
+            r = session.get(
                 BASE_URL + path,
                 params=params,
-                timeout=20,
+                timeout=25,
             )
 
-            response.raise_for_status()
+            r.raise_for_status()
 
-            return response.json()
+            return r.json()
 
-        except Exception as error:
+        except Exception as exc:
 
-            last_error = error
+            last_error = exc
 
             print(
-                f"Request retry "
-                f"{attempt + 1}/3 | "
-                f"{type(error).__name__}: "
-                f"{error}"
+                f"Request retry {attempt + 1}/4 | "
+                f"{type(exc).__name__}: {exc}"
             )
 
             time.sleep(
@@ -103,8 +99,7 @@ def get_json(path, params=None):
             )
 
     raise RuntimeError(
-        f"Toobit request failed: "
-        f"{last_error}"
+        f"Toobit request failed: {last_error}"
     )
 
 
@@ -125,12 +120,10 @@ def build_contract_map():
 
     result = {}
 
-    contracts = data.get(
+    for item in data.get(
         "contracts",
         []
-    )
-
-    for item in contracts:
+    ):
 
         api_symbol = str(
             item.get(
@@ -163,17 +156,18 @@ def build_contract_map():
         if not api_symbol:
             continue
 
-        if status and status != "TRADING":
+        if (
+            status
+            and status != "TRADING"
+        ):
             continue
 
         if index_symbol:
-
             result[
                 index_symbol
             ] = api_symbol
 
         if underlying:
-
             result[
                 underlying + "USDT"
             ] = api_symbol
@@ -188,37 +182,7 @@ def build_contract_map():
     return result
 
 
-def extract_batch(data):
-
-    if isinstance(
-        data,
-        list
-    ):
-        return data
-
-    if isinstance(
-        data,
-        dict
-    ):
-
-        rows = data.get(
-            "data"
-        )
-
-        if isinstance(
-            rows,
-            list
-        ):
-            return rows
-
-    return []
-
-
-def fetch_toobit_5m_history(
-    symbol
-):
-
-    mapping = build_contract_map()
+def resolve_symbol(symbol):
 
     pair = (
         symbol
@@ -229,38 +193,64 @@ def fetch_toobit_5m_history(
         .upper()
     )
 
-    api_symbol = mapping.get(
+    return build_contract_map().get(
         pair
+    )
+
+
+def extract_batch(payload):
+
+    if isinstance(
+        payload,
+        list
+    ):
+        return payload
+
+    if (
+        isinstance(
+            payload,
+            dict
+        )
+        and
+        isinstance(
+            payload.get("data"),
+            list
+        )
+    ):
+        return payload["data"]
+
+    return []
+
+
+# ============================================================
+# DIRECT MULTI-TIMEFRAME DATA
+# ============================================================
+
+def fetch_interval_history(
+    symbol,
+    interval,
+    lookback_days,
+):
+
+    api_symbol = resolve_symbol(
+        symbol
     )
 
     if not api_symbol:
 
         print(
             f"{symbol} | "
-            f"NOT FOUND on Toobit futures"
+            "NOT FOUND on Toobit futures"
         )
 
         return None
 
-    print(
-        f"{symbol} -> "
-        f"{api_symbol}"
-    )
+    bar_ms = INTERVAL_MS[
+        interval
+    ]
 
     now = pd.Timestamp.now(
         tz="UTC"
-    )
-
-    start = (
-        now
-        - pd.Timedelta(
-            days=core.FETCH_DAYS
-        )
-    )
-
-    start_ms = int(
-        start.timestamp()
-        * 1000
     )
 
     end_ms = int(
@@ -268,15 +258,21 @@ def fetch_toobit_5m_history(
         * 1000
     )
 
-    bar_ms = (
-        5
-        * 60
+    start_ms = int(
+        (
+            now
+            - pd.Timedelta(
+                days=lookback_days
+            )
+        ).timestamp()
         * 1000
     )
 
-    # حداکثر 1000 کندل در هر درخواست
+    # زیر سقف 1000 کندل در هر درخواست
+    chunk_bars = 950
+
     chunk_ms = (
-        1000
+        chunk_bars
         * bar_ms
     )
 
@@ -284,46 +280,42 @@ def fetch_toobit_5m_history(
 
     rows = []
 
-    request_number = 0
+    request_no = 0
 
     while cursor < end_ms:
 
-        request_number += 1
+        request_no += 1
 
         chunk_end = min(
             cursor
             + chunk_ms
             - 1,
-            end_ms
+            end_ms,
         )
 
-        params = {
-            "symbol":
-                api_symbol,
-
-            "interval":
-                "5m",
-
-            "startTime":
-                cursor,
-
-            "endTime":
-                chunk_end,
-
-            "limit":
-                1000,
-        }
-
-        raw = get_json(
+        payload = get_json(
             "/quote/v1/klines",
-            params=params,
+            params={
+                "symbol":
+                    api_symbol,
+
+                "interval":
+                    interval,
+
+                "startTime":
+                    cursor,
+
+                "endTime":
+                    chunk_end,
+
+                "limit":
+                    1000,
+            },
         )
 
         batch = extract_batch(
-            raw
+            payload
         )
-
-        timestamps = []
 
         for candle in batch:
 
@@ -345,14 +337,10 @@ def fetch_toobit_5m_history(
                 close_time = (
                     int(candle[6])
                     if len(candle) > 6
-                    else (
-                        ts
-                        + bar_ms
-                        - 1
-                    )
+                    else ts + bar_ms - 1
                 )
 
-                # فقط کندل بسته‌شده
+                # کندل باز را استفاده نکن
                 if close_time > end_ms:
                     continue
 
@@ -365,49 +353,31 @@ def fetch_toobit_5m_history(
                     float(candle[5]),
                 ])
 
-                timestamps.append(
-                    ts
-                )
-
             except Exception:
                 continue
 
         if (
-            request_number == 1
-            or request_number % 5 == 0
+            request_no == 1
+            or request_no % 5 == 0
         ):
 
             print(
-                f"  Toobit chunk "
-                f"{request_number} | "
-                f"bars={len(rows)}"
+                f"  {symbol} {interval} "
+                f"request {request_no} | "
+                f"batch={len(batch)} | "
+                f"total={len(rows)}"
             )
 
-        if timestamps:
-
-            cursor = (
-                max(timestamps)
-                + bar_ms
-            )
-
-        else:
-
-            cursor = (
-                chunk_end
-                + 1
-            )
+        cursor = (
+            chunk_end
+            + 1
+        )
 
         time.sleep(
             0.05
         )
 
     if not rows:
-
-        print(
-            f"{symbol} | "
-            f"NO 5m DATA"
-        )
-
         return None
 
     df = pd.DataFrame(
@@ -440,7 +410,9 @@ def fetch_toobit_5m_history(
     df[
         "datetime"
     ] = pd.to_datetime(
-        df["timestamp"],
+        df[
+            "timestamp"
+        ],
         unit="ms",
         utc=True,
     )
@@ -457,7 +429,7 @@ def fetch_toobit_5m_history(
 
     print(
         f"{symbol} | "
-        f"Toobit 5m bars="
+        f"{interval} raw bars="
         f"{len(df)} | "
         f"coverage="
         f"{coverage:.1f} days"
@@ -466,15 +438,202 @@ def fetch_toobit_5m_history(
     return df
 
 
-# موتور V4.2/V4.3 را مجبور می‌کنیم
-# دیتای Toobit استفاده کند
-core.fetch_5m_history = (
-    fetch_toobit_5m_history
-)
+def add_indicators_for_replay(
+    df,
+    label,
+):
+
+    if (
+        df is None
+        or df.empty
+    ):
+        return None
+
+    before = len(
+        df
+    )
+
+    out = core.add_indicators(
+        df
+    )
+
+    after = len(
+        out
+    )
+
+    print(
+        f"  {label} indicators | "
+        f"raw={before} | "
+        f"usable={after}"
+    )
+
+    if (
+        out is None
+        or out.empty
+    ):
+        return None
+
+    return out
+
+
+def prepare_replay(
+    symbol
+):
+
+    print(
+        f"{symbol} -> "
+        "direct multi-timeframe "
+        "Toobit data"
+    )
+
+    h5_raw = fetch_interval_history(
+        symbol,
+        "5m",
+        LOOKBACK_DAYS["5m"],
+    )
+
+    h15_raw = fetch_interval_history(
+        symbol,
+        "15m",
+        LOOKBACK_DAYS["15m"],
+    )
+
+    h1_raw = fetch_interval_history(
+        symbol,
+        "1h",
+        LOOKBACK_DAYS["1h"],
+    )
+
+    h4_raw = fetch_interval_history(
+        symbol,
+        "4h",
+        LOOKBACK_DAYS["4h"],
+    )
+
+    if any(
+        x is None or x.empty
+        for x in [
+            h5_raw,
+            h15_raw,
+            h1_raw,
+            h4_raw,
+        ]
+    ):
+
+        return (
+            None,
+            "MISSING_RAW_DATA",
+        )
+
+    # P1 از EMA200 تایم 4H استفاده می‌کند
+    if len(
+        h4_raw
+    ) < 200:
+
+        print(
+            f"{symbol} | "
+            "INSUFFICIENT 4H HISTORY: "
+            f"{len(h4_raw)} bars; "
+            "P1 needs EMA200."
+        )
+
+        return (
+            None,
+            "INSUFFICIENT_4H_HISTORY",
+        )
+
+    h5 = add_indicators_for_replay(
+        h5_raw,
+        "5m",
+    )
+
+    h15 = add_indicators_for_replay(
+        h15_raw,
+        "15m",
+    )
+
+    h1 = add_indicators_for_replay(
+        h1_raw,
+        "1h",
+    )
+
+    h4 = add_indicators_for_replay(
+        h4_raw,
+        "4h",
+    )
+
+    if any(
+        x is None or x.empty
+        for x in [
+            h5,
+            h15,
+            h1,
+            h4,
+        ]
+    ):
+
+        return (
+            None,
+            "INDICATOR_WARMUP_FAILED",
+        )
+
+    h5[
+        "signal_time"
+    ] = (
+        h5[
+            "datetime"
+        ]
+        + pd.Timedelta(
+            minutes=5
+        )
+    )
+
+    h15[
+        "available_time"
+    ] = (
+        h15[
+            "datetime"
+        ]
+        + pd.Timedelta(
+            minutes=15
+        )
+    )
+
+    h1[
+        "available_time"
+    ] = (
+        h1[
+            "datetime"
+        ]
+        + pd.Timedelta(
+            hours=1
+        )
+    )
+
+    h4[
+        "available_time"
+    ] = (
+        h4[
+            "datetime"
+        ]
+        + pd.Timedelta(
+            hours=4
+        )
+    )
+
+    return (
+        (
+            h5,
+            h15,
+            h1,
+            h4,
+        ),
+        None,
+    )
 
 
 # ============================================================
-# PUMP EVENT DETECTOR
+# FIND REAL PUMP
 # ============================================================
 
 def detect_pump_event(
@@ -500,7 +659,9 @@ def detect_pump_event(
         >= recent_start
     ].copy()
 
-    if len(recent) < 20:
+    if len(
+        recent
+    ) < 50:
         return None
 
     future_bars = (
@@ -515,7 +676,7 @@ def detect_pump_event(
         .iloc[::-1]
         .rolling(
             future_bars,
-            min_periods=1
+            min_periods=1,
         )
         .max()
         .iloc[::-1]
@@ -533,13 +694,8 @@ def detect_pump_event(
     ) * 100.0
 
     start_idx = (
-        gain_pct.idxmax()
-    )
-
-    pump_pct = float(
-        gain_pct.loc[
-            start_idx
-        ]
+        gain_pct
+        .idxmax()
     )
 
     start_row = recent.loc[
@@ -627,13 +783,13 @@ def detect_pump_event(
 
 
 # ============================================================
-# SIGNAL SCORING
+# SCORE SIGNAL POSITION INSIDE PUMP
 # ============================================================
 
 def score_signal(
     trade,
     event,
-    h5
+    h5,
 ):
 
     if trade is None:
@@ -641,14 +797,19 @@ def score_signal(
         return {
             "stage":
                 "MISS",
+
             "remaining_pct":
                 None,
+
             "progress_pct":
                 None,
+
             "lead_minutes":
                 None,
+
             "mfe_pct":
                 None,
+
             "mae_pct":
                 None,
         }
@@ -695,8 +856,8 @@ def score_signal(
         0.0,
         min(
             100.0,
-            progress
-        )
+            progress,
+        ),
     )
 
     remaining_pct = (
@@ -714,9 +875,13 @@ def score_signal(
         - signal_time
     ).total_seconds() / 60.0
 
-    if signal_time < event[
-        "start_time"
-    ]:
+    if (
+        signal_time
+        <
+        event[
+            "start_time"
+        ]
+    ):
 
         stage = "PRE-PUMP"
 
@@ -803,7 +968,7 @@ def score_signal(
 
 
 # ============================================================
-# ONE SYMBOL REPLAY
+# ONE SYMBOL
 # ============================================================
 
 def replay_symbol(
@@ -811,6 +976,7 @@ def replay_symbol(
 ):
 
     print()
+
     print(
         "=" * 96
     )
@@ -823,30 +989,33 @@ def replay_symbol(
         "=" * 96
     )
 
-    prepared = (
-        core.prepare_symbol(
-            symbol
-        )
+    (
+        prepared,
+        prep_error,
+    ) = prepare_replay(
+        symbol
     )
 
     if prepared is None:
 
         print(
-            "RESULT: NO DATA"
+            f"RESULT: "
+            f"{prep_error}"
         )
 
         return {
             "symbol":
                 symbol,
+
             "status":
-                "NO_DATA",
+                prep_error,
         }
 
     (
         h5,
         h15,
         h1,
-        h4
+        h4,
     ) = prepared
 
     event = detect_pump_event(
@@ -856,38 +1025,24 @@ def replay_symbol(
     if event is None:
 
         print(
-            "RESULT: NO EVENT"
+            "RESULT: NO_EVENT"
         )
 
         return {
             "symbol":
                 symbol,
+
             "status":
                 "NO_EVENT",
         }
 
     print(
-        f"Pump start: "
-        f"{event['start_time']}"
-    )
-
-    print(
-        f"Start price: "
-        f"{event['start_price']:.8f}"
-    )
-
-    print(
-        f"Peak time: "
-        f"{event['peak_time']}"
-    )
-
-    print(
-        f"Peak price: "
-        f"{event['peak_price']:.8f}"
-    )
-
-    print(
-        f"Detected pump: "
+        f"Detected pump | "
+        f"start="
+        f"{event['start_time']} | "
+        f"peak="
+        f"{event['peak_time']} | "
+        f"move="
         f"{event['pump_pct']:.2f}%"
     )
 
@@ -900,15 +1055,17 @@ def replay_symbol(
     ):
 
         print(
-            f"RESULT: MOVE BELOW "
-            f"{MIN_PUMP_PCT:.1f}%"
+            "RESULT: BELOW_THRESHOLD "
+            f"({event['pump_pct']:.2f}%)"
         )
 
         return {
             "symbol":
                 symbol,
+
             "status":
                 "BELOW_THRESHOLD",
+
             "pump_pct":
                 event[
                     "pump_pct"
@@ -935,17 +1092,11 @@ def replay_symbol(
     )
 
     candidates = [
-        trade
-        for trade in trades
+        t
+        for t in trades
         if (
-            trade[
-                "time"
-            ]
-            >= search_start
-            and
-            trade[
-                "time"
-            ]
+            search_start
+            <= t["time"]
             <= event[
                 "peak_time"
             ]
@@ -954,9 +1105,7 @@ def replay_symbol(
 
     candidates.sort(
         key=lambda x:
-            x[
-                "time"
-            ]
+            x["time"]
     )
 
     trade = (
@@ -980,17 +1129,19 @@ def replay_symbol(
         return {
             "symbol":
                 symbol,
+
             "status":
                 "MISS",
+
             "pump_pct":
                 event[
                     "pump_pct"
                 ],
+
             "stage":
                 "MISS",
         }
 
-    print()
     print(
         f"P1 signal: "
         f"{trade['time']}"
@@ -1006,32 +1157,13 @@ def replay_symbol(
         f"{score['stage']}"
     )
 
-    if (
-        score[
-            "lead_minutes"
-        ]
-        >= 0
-    ):
-
-        print(
-            f"Lead before pump: "
-            f"{score['lead_minutes']:.0f} min"
-        )
-
-    else:
-
-        print(
-            f"Signal after pump start: "
-            f"{abs(score['lead_minutes']):.0f} min"
-        )
-
     print(
-        f"Pump already used: "
+        "Pump already used: "
         f"{score['progress_pct']:.1f}%"
     )
 
     print(
-        f"Upside remaining to peak: "
+        "Upside remaining to peak: "
         f"{score['remaining_pct']:.2f}%"
     )
 
@@ -1048,7 +1180,8 @@ def replay_symbol(
     print(
         f"Backtest R: "
         f"{trade['r']:+.2f}R | "
-        f"Exit={trade['exit']}"
+        f"Exit="
+        f"{trade['exit']}"
     )
 
     good = (
@@ -1067,14 +1200,15 @@ def replay_symbol(
         )
     )
 
+    status = (
+        "GOOD"
+        if good
+        else "LATE_WEAK"
+    )
+
     print(
-        "REPLAY VERDICT: "
-        +
-        (
-            "GOOD"
-            if good
-            else "LATE/WEAK"
-        )
+        f"REPLAY VERDICT: "
+        f"{status}"
     )
 
     return {
@@ -1082,11 +1216,7 @@ def replay_symbol(
             symbol,
 
         "status":
-            (
-                "GOOD"
-                if good
-                else "LATE_WEAK"
-            ),
+            status,
 
         "pump_pct":
             event[
@@ -1136,7 +1266,7 @@ def main():
     )
 
     print(
-        "PUMP REPLAY P1 - TOOBIT"
+        "PUMP REPLAY P1 - TOOBIT V2"
     )
 
     print(
@@ -1149,21 +1279,25 @@ def main():
     )
 
     print(
-        "Goal: check whether P1 "
-        "detected real pumps early "
-        "enough to leave usable upside."
+        "Uses direct "
+        "5m/15m/1h/4h Toobit history; "
+        "P1 logic is unchanged."
     )
 
     results = []
 
-    for number, symbol in enumerate(
+    for (
+        n,
+        symbol,
+    ) in enumerate(
         SYMBOLS,
-        1
+        1,
     ):
 
         print()
+
         print(
-            f"[{number}/"
+            f"[{n}/"
             f"{len(SYMBOLS)}]"
         )
 
@@ -1173,17 +1307,18 @@ def main():
                 symbol
             )
 
-        except Exception as error:
+        except Exception as exc:
 
             print(
                 f"ERROR {symbol}: "
-                f"{type(error).__name__}: "
-                f"{error}"
+                f"{type(exc).__name__}: "
+                f"{exc}"
             )
 
             result = {
                 "symbol":
                     symbol,
+
                 "status":
                     "ERROR",
             }
@@ -1193,6 +1328,7 @@ def main():
         )
 
     print()
+
     print(
         "#" * 96
     )
@@ -1205,27 +1341,19 @@ def main():
         "#" * 96
     )
 
-    for result in results:
+    for r in results:
 
-        symbol = result[
-            "symbol"
-        ]
-
-        status = result[
-            "status"
-        ]
-
-        pump = result.get(
+        pump = r.get(
             "pump_pct"
         )
 
-        stage = result.get(
-            "stage",
-            "-"
+        remaining = r.get(
+            "remaining_pct"
         )
 
-        remaining = result.get(
-            "remaining_pct"
+        stage = r.get(
+            "stage",
+            "-",
         )
 
         pump_text = (
@@ -1241,14 +1369,17 @@ def main():
         )
 
         print(
-            f"{symbol:12s} | "
-            f"Pump:{pump_text:>7s} | "
-            f"Stage:{stage:9s} | "
-            f"Remaining:{remaining_text:>7s} | "
-            f"{status}"
+            f"{r['symbol']:12s} | "
+            f"Pump:"
+            f"{pump_text:>7s} | "
+            f"Stage:"
+            f"{stage:9s} | "
+            f"Remaining:"
+            f"{remaining_text:>7s} | "
+            f"{r['status']}"
         )
 
-    valid = [
+    evaluable = [
         r
         for r in results
         if r[
@@ -1266,7 +1397,7 @@ def main():
             "status"
         ]
         == "GOOD"
-        for r in valid
+        for r in evaluable
     )
 
     miss_count = sum(
@@ -1274,13 +1405,14 @@ def main():
             "status"
         ]
         == "MISS"
-        for r in valid
+        for r in evaluable
     )
 
     print()
+
     print(
-        f"Usable pump events: "
-        f"{len(valid)}"
+        "Evaluable pump events: "
+        f"{len(evaluable)}"
     )
 
     print(
@@ -1293,17 +1425,17 @@ def main():
         f"{miss_count}"
     )
 
-    if valid:
+    if evaluable:
 
         capture_rate = (
             good_count
             /
-            len(valid)
+            len(evaluable)
             * 100.0
         )
 
         print(
-            f"GOOD capture rate: "
+            "GOOD capture rate: "
             f"{capture_rate:.1f}%"
         )
 
@@ -1313,7 +1445,7 @@ def main():
                 "remaining_pct"
             ]
         )
-        for r in valid
+        for r in evaluable
         if r.get(
             "remaining_pct"
         )
@@ -1323,15 +1455,16 @@ def main():
     if remaining_values:
 
         print(
-            f"Median upside remaining: "
+            "Median upside remaining: "
             f"{pd.Series(remaining_values).median():.2f}%"
         )
 
     print()
+
     print(
-        "IMPORTANT: This is a selected "
-        "winner replay test, not proof "
-        "of live profitability."
+        "IMPORTANT: "
+        "selected-winner replay only; "
+        "not proof of live profitability."
     )
 
 
