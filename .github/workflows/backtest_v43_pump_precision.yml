@@ -1,0 +1,42 @@
+name: V4.3 Pump Precision Backtest
+
+on:
+  workflow_dispatch:
+
+jobs:
+  v43-pump-precision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests pandas ta
+
+      - name: Run V4.3 Pump Precision
+        shell: bash
+        run: |
+          set -o pipefail
+          python backtest_v43_pump_precision.py | tee v43_pump_precision_output.txt
+
+      - name: Show final ranking in Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## V4.3 Pump Precision Backtest"
+            echo '```text'
+            awk '
+              /V4.3 PUMP PRECISION - FINAL RANKING/ {show=1}
+              /PER-SYMBOL SUPER PUMP RESULTS/ {show=0}
+              show {print}
+            ' v43_pump_precision_output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
