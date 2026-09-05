@@ -1,0 +1,42 @@
+name: V4.2 Super Pump Max Backtest
+
+on:
+  workflow_dispatch:
+
+jobs:
+  v42-super-pump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests pandas ta
+
+      - name: Run V4.2 Super Pump Max
+        shell: bash
+        run: |
+          set -o pipefail
+          python backtest_v42_super_pump.py | tee v42_super_pump_output.txt
+
+      - name: Show final ranking in Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## V4.2 Super Pump Max Backtest"
+            echo '```text'
+            awk '
+              /V4.2 SUPER PUMP MAX - FINAL RANKING/ {show=1}
+              /PER-SYMBOL SUPER PUMP RESULTS/ {show=0}
+              show {print}
+            ' v42_super_pump_output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
