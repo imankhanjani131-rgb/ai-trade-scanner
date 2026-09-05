@@ -1,0 +1,48 @@
+name: P1 Core Majors TP Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  p1-core-majors-tp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas numpy ta
+
+      - name: Run P1 Core Majors TP Test
+        shell: bash
+        run: |
+          set -o pipefail
+          python -u p1_core_majors_tp.py | tee p1_core_majors_tp_output.txt
+
+      - name: Show final results in Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## P1 Core Majors TP Results"
+            echo '```text'
+            tail -n 180 p1_core_majors_tp_output.txt 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save full output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p1-core-majors-tp-output
+          path: p1_core_majors_tp_output.txt
+          if-no-files-found: ignore
