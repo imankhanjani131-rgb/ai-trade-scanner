@@ -23,4 +23,12 @@ jobs:
 
       - name: Run Replay New Listing Hunter V1
         run: |
-          python replay_new_listing_v1.py
+          python replay_new_listing_v1.py | tee replay_output.txt
+
+      - name: Show Replay Results in Summary
+        if: always()
+        run: |
+          echo "## Replay New Listing Hunter V1" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          cat replay_output.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
