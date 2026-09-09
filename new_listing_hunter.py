@@ -6,9 +6,8 @@ from pathlib import Path
 
 import requests
 
-
 BASE = "https://api.toobit.com"
-STATE = Path("new_listing_state.json")
+STATE_FILE = Path("new_listing_state.json")
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
@@ -16,31 +15,59 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 TIMEOUT = 20
 
 
-def now():
+def utc_now():
     return datetime.now(timezone.utc)
 
 
 def load_state():
-    if not STATE.exists():
-        return {
-            "init": False,
-            "items": {}
-        }
+    default = {
+        "initialized": False,
+        "items": {}
+    }
+
+    if not STATE_FILE.exists():
+        return default
 
     try:
-        return json.loads(
-            STATE.read_text(encoding="utf-8")
+        data = json.loads(
+            STATE_FILE.read_text(
+                encoding="utf-8"
+            )
         )
-    except Exception as e:
-        print("State load error:", e)
+
+        if not isinstance(data, dict):
+            return default
+
+        initialized = bool(
+            data.get(
+                "initialized",
+                data.get("init", False)
+            )
+        )
+
+        items = data.get(
+            "items",
+            {}
+        )
+
+        if not isinstance(items, dict):
+            items = {}
+
         return {
-            "init": False,
-            "items": {}
+            "initialized": initialized,
+            "items": items
         }
+
+    except Exception as exc:
+        print(
+            "STATE_LOAD_ERROR:",
+            repr(exc)
+        )
+        return default
 
 
 def save_state(state):
-    STATE.write_text(
+    STATE_FILE.write_text(
         json.dumps(
             state,
             ensure_ascii=False,
@@ -50,18 +77,16 @@ def save_state(state):
     )
 
 
-def get_chat_id():
-    # اگر Secret جدا برای Chat ID داشته باشیم
+def detect_chat_id():
     if CHAT_ID:
-        print("Using TELEGRAM_CHAT_ID secret.")
         return CHAT_ID
 
-    # اگر توکن نباشد
     if not TOKEN:
-        print("TELEGRAM_BOT_TOKEN is missing.")
+        print(
+            "TELEGRAM_BOT_TOKEN_MISSING"
+        )
         return ""
 
-    # پیدا کردن Chat ID از آخرین پیام کاربر به ربات
     try:
         response = requests.get(
             f"https://api.telegram.org/bot{TOKEN}/getUpdates",
@@ -76,58 +101,59 @@ def get_chat_id():
 
         if not data.get("ok"):
             print(
-                "Telegram getUpdates error:",
+                "TELEGRAM_GETUPDATES_ERROR:",
                 data
             )
             return ""
 
-        updates = data.get("result", [])
-
-        for update in reversed(updates):
+        for update in reversed(
+            data.get("result", [])
+        ):
             message = (
                 update.get("message")
-                or update.get("channel_post")
-                or update.get("edited_message")
+                or update.get(
+                    "edited_message"
+                )
+                or update.get(
+                    "channel_post"
+                )
             )
 
             if not message:
                 continue
 
-            chat = message.get("chat", {})
-            cid = chat.get("id")
+            cid = (
+                message
+                .get("chat", {})
+                .get("id")
+            )
 
             if cid is not None:
-                print(
-                    "Telegram chat id detected."
-                )
                 return str(cid)
 
-    except Exception as e:
+    except Exception as exc:
         print(
-            "Telegram chat id error:",
-            repr(e)
+            "TELEGRAM_CHAT_ID_ERROR:",
+            repr(exc)
         )
 
-    print(
-        "Telegram chat id not found."
-    )
     return ""
 
 
-def send(text):
+def send_telegram(text):
     if not TOKEN:
         print(
-            "Telegram not ready: "
-            "TELEGRAM_BOT_TOKEN missing."
+            "TELEGRAM_NOT_READY: "
+            "token missing"
         )
         return False
 
-    cid = get_chat_id()
+    cid = detect_chat_id()
 
     if not cid:
         print(
-            "Telegram not ready: "
-            "chat id missing."
+            "TELEGRAM_NOT_READY: "
+            "chat id missing"
         )
         return False
 
@@ -145,65 +171,87 @@ def send(text):
 
         if not data.get("ok"):
             print(
-                "Telegram send error:",
+                "TELEGRAM_SEND_ERROR:",
                 data
             )
             return False
 
-        print("Telegram sent successfully.")
+        print("TELEGRAM_SENT")
         return True
 
-    except Exception as e:
+    except Exception as exc:
         print(
-            "Telegram send exception:",
-            repr(e)
+            "TELEGRAM_SEND_EXCEPTION:",
+            repr(exc)
         )
         return False
 
 
-def contracts():
+def fetch_contracts():
     response = requests.get(
         f"{BASE}/api/v1/exchangeInfo",
         timeout=TIMEOUT
     )
 
     response.raise_for_status()
+
     data = response.json()
 
     result = {}
 
-    for item in data.get("contracts", []):
-
+    for item in data.get(
+        "contracts",
+        []
+    ):
         symbol = str(
-            item.get("symbol", "")
+            item.get(
+                "symbol",
+                ""
+            )
         ).upper()
 
         quote_asset = str(
-            item.get("quoteAsset", "")
+            item.get(
+                "quoteAsset",
+                ""
+            )
         ).upper()
 
         status = str(
-            item.get("status", "UNKNOWN")
+            item.get(
+                "status",
+                "UNKNOWN"
+            )
         ).upper()
+
+        inverse = bool(
+            item.get(
+                "inverse",
+                False
+            )
+        )
+
+        categories_raw = (
+            item.get("categories")
+            or []
+        )
 
         categories = {
             str(x).lower()
-            for x in item.get(
-                "categories",
-                []
-            )
+            for x in categories_raw
         }
 
         if quote_asset != "USDT":
             continue
 
-        if "-SWAP-USDT" not in symbol:
+        if not symbol.endswith(
+            "-SWAP-USDT"
+        ):
             continue
 
-        if item.get("inverse") is True:
+        if inverse:
             continue
 
-        # سهام و TradFi حذف شوند
         if "tradfi" in categories:
             continue
 
@@ -212,11 +260,22 @@ def contracts():
     return result
 
 
-def klines(symbol, start_iso):
+def fetch_15m_klines(
+    symbol,
+    start_iso
+):
+    start_dt = datetime.fromisoformat(
+        start_iso
+    )
+
     start_ms = int(
-        datetime.fromisoformat(
-            start_iso
-        ).timestamp() * 1000
+        start_dt.timestamp()
+        * 1000
+    )
+
+    now_ms = int(
+        time.time()
+        * 1000
     )
 
     response = requests.get(
@@ -225,65 +284,98 @@ def klines(symbol, start_iso):
             "symbol": symbol,
             "interval": "15m",
             "startTime": start_ms,
-            "limit": 100
+            "endTime": now_ms,
+            "limit": 1000
         },
         timeout=TIMEOUT
     )
 
     response.raise_for_status()
 
-    data = response.json()
-
-    current_ms = int(
-        time.time() * 1000
-    )
+    raw = response.json()
 
     rows = []
 
-    for candle in data:
-
-        if len(candle) < 7:
+    for candle in raw:
+        if (
+            not isinstance(
+                candle,
+                list
+            )
+            or len(candle) < 7
+        ):
             continue
 
         close_time = int(
             candle[6]
         )
 
-        # فقط کندل بسته‌شده
-        if close_time > current_ms:
+        if close_time > now_ms:
             continue
 
         rows.append(
             {
-                "o": float(candle[1]),
-                "h": float(candle[2]),
-                "l": float(candle[3]),
-                "c": float(candle[4]),
-                "v": float(candle[5])
+                "t": int(
+                    candle[0]
+                ),
+                "o": float(
+                    candle[1]
+                ),
+                "h": float(
+                    candle[2]
+                ),
+                "l": float(
+                    candle[3]
+                ),
+                "c": float(
+                    candle[4]
+                ),
+                "v": float(
+                    candle[5]
+                )
             }
         )
+
+    rows.sort(
+        key=lambda x: x["t"]
+    )
 
     return rows
 
 
-def analyze(symbol, start_iso, hour):
-    candles = klines(
+def analyze(
+    symbol,
+    trading_since,
+    hour
+):
+    candles = fetch_15m_klines(
         symbol,
-        start_iso
+        trading_since
     )
 
-    if len(candles) < 4:
+    needed = hour * 4
+
+    candles = candles[:needed]
+
+    if len(candles) < needed:
         return (
             "👀 هنوز صبر",
             (
-                f"{symbol}\n"
-                f"بررسی {hour} ساعت بعد\n"
-                "کندل کافی برای تحلیل نداریم."
+                f"ارز: "
+                f"{symbol.replace('-SWAP-USDT', '/USDT')}\n"
+                f"بررسی {hour} ساعته\n"
+                f"کندل کافی نداریم: "
+                f"{len(candles)}/{needed}"
             )
         )
 
-    first_price = candles[0]["o"]
-    price = candles[-1]["c"]
+    first_price = (
+        candles[0]["o"]
+    )
+
+    price = (
+        candles[-1]["c"]
+    )
 
     high = max(
         x["h"]
@@ -297,18 +389,27 @@ def analyze(symbol, start_iso, hour):
 
     recent = candles[-4:]
 
-    if len(candles) >= 8:
-        prior = candles[-8:-4]
-    else:
-        prior = []
+    prior = (
+        candles[-8:-4]
+        if len(candles) >= 8
+        else []
+    )
 
     gain = (
-        (price / first_price) - 1
+        (
+            price
+            / first_price
+        )
+        - 1
     ) * 100
 
     pullback = (
-        (price / high) - 1
-    ) * 100
+        (
+            price
+            / high
+        )
+        - 1
+    ) * 100 if high > 0 else 0
 
     recent_volume = (
         sum(
@@ -318,24 +419,22 @@ def analyze(symbol, start_iso, hour):
         / len(recent)
     )
 
-    if prior:
-        prior_volume = (
-            sum(
-                x["v"]
-                for x in prior
-            )
-            / len(prior)
+    prior_volume = (
+        sum(
+            x["v"]
+            for x in prior
         )
-    else:
-        prior_volume = recent_volume
+        / len(prior)
+        if prior
+        else recent_volume
+    )
 
-    if prior_volume > 0:
-        volume_ratio = (
-            recent_volume
-            / prior_volume
-        )
-    else:
-        volume_ratio = 1.0
+    volume_ratio = (
+        recent_volume
+        / prior_volume
+        if prior_volume > 0
+        else 1.0
+    )
 
     higher_lows = sum(
         b["l"] > a["l"]
@@ -353,7 +452,7 @@ def analyze(symbol, start_iso, hour):
         )
     )
 
-    sma_recent = (
+    sma4 = (
         sum(
             x["c"]
             for x in recent
@@ -361,51 +460,46 @@ def analyze(symbol, start_iso, hour):
         / len(recent)
     )
 
-    if high > low:
-        position = (
-            (price - low)
-            / (high - low)
+    range_pos = (
+        (
+            price - low
         )
-    else:
-        position = 0.5
+        / (
+            high - low
+        )
+        if high > low
+        else 0.5
+    )
 
     score = 0
 
-    # بالای میانگین کوتاه
-    if price > sma_recent:
+    if price > sma4:
         score += 1
 
-    # ساخت کف‌های بالاتر
     if higher_lows >= 2:
         score += 2
 
-    # ساخت سقف‌های بالاتر
     if higher_highs >= 2:
         score += 1
 
-    # افزایش حجم
     if volume_ratio >= 1.50:
         score += 2
+
     elif volume_ratio >= 1.15:
         score += 1
 
-    # رشد سالم
     if 3 <= gain <= 45:
         score += 1
 
-    # نزدیک بخش بالایی رنج
-    if position >= 0.65:
+    if range_pos >= 0.65:
         score += 1
 
-    # ضد تعقیب پامپ
     if pullback <= -15:
         score -= 3
 
-    # اگر بیش از حد پامپ کرده
     if gain >= 80:
         score -= 2
 
-    # اگر از شروع شدیداً منفی شده
     if gain <= -12:
         score -= 3
 
@@ -421,14 +515,16 @@ def analyze(symbol, start_iso, hour):
     else:
         title = "👀 هنوز صبر"
 
-    display_symbol = symbol.replace(
-        "-SWAP-USDT",
-        "/USDT"
+    display_symbol = (
+        symbol.replace(
+            "-SWAP-USDT",
+            "/USDT"
+        )
     )
 
-    message = (
+    body = (
         f"ارز: {display_symbol}\n"
-        f"بررسی: {hour} ساعت بعد از شروع\n"
+        f"بررسی: {hour} ساعت بعد از شروع معامله\n"
         f"امتیاز: {score}\n"
         f"قیمت: {price}\n"
         f"رشد از شروع: {gain:+.1f}٪\n"
@@ -437,7 +533,6 @@ def analyze(symbol, start_iso, hour):
     )
 
     if score >= 6:
-
         recent_low = min(
             x["l"]
             for x in recent
@@ -452,21 +547,24 @@ def analyze(symbol, start_iso, hour):
 
         if risk <= 0:
             sl = price * 0.94
-            risk = price * 0.06
+            risk = price - sl
 
-        tp1 = price + (
-            1.5 * risk
+        tp1 = (
+            price
+            + 1.5 * risk
         )
 
-        tp2 = price + (
-            2.5 * risk
+        tp2 = (
+            price
+            + 2.5 * risk
         )
 
-        tp3 = price + (
-            4.0 * risk
+        tp3 = (
+            price
+            + 4.0 * risk
         )
 
-        message += (
+        body += (
             f"\n\nورود تقریبی: {price}"
             f"\nحد ضرر: {sl}"
             f"\nهدف ۱: {tp1}"
@@ -474,50 +572,212 @@ def analyze(symbol, start_iso, hour):
             f"\nهدف ۳: {tp3}"
         )
 
-    return title, message
+    return title, body
 
 
 def main():
-
-    # تست تلگرام فقط در اجرای دستی GitHub
-    if (
-        os.getenv(
-            "GITHUB_EVENT_NAME"
-        )
-        == "workflow_dispatch"
-    ):
-        print(
-            "Manual run detected. "
-            "Testing Telegram..."
-        )
-
-        send(
-            "✅ اتصال New Listing Hunter "
-            "به تلگرام سالم است."
-        )
-
     state = load_state()
 
-    state.setdefault(
-        "init",
-        False
-    )
+    try:
+        current = fetch_contracts()
 
-    state.setdefault(
-        "items",
-        {}
-    )
-
-    current = contracts()
-    current_time = now()
+    except Exception as exc:
+        print(
+            "TOOBIT_EXCHANGEINFO_ERROR:",
+            repr(exc)
+        )
+        return
 
     print(
-        "Crypto USDT perpetuals:",
+        "CRYPTO_USDT_PERPETUALS:",
         len(current)
     )
 
-    # اجرای اولیه:
-    # تمام ارزهای فعلی خط پایه می‌شوند
-    if not state["init"]:
+    now = utc_now()
 
-        for symbol,
+    if not state["initialized"]:
+
+        for symbol, status in current.items():
+
+            state["items"][symbol] = {
+                "status": status,
+                "baseline": True,
+                "trading_since": None,
+                "sent": []
+            }
+
+        state[
+            "initialized"
+        ] = True
+
+        save_state(state)
+
+        print(
+            "BASELINE_SAVED"
+        )
+
+        return
+
+    for symbol, status in current.items():
+
+        record = state[
+            "items"
+        ].get(symbol)
+
+        if record is None:
+
+            record = {
+                "status": status,
+                "baseline": False,
+                "trading_since": (
+                    now.isoformat()
+                    if status == "TRADING"
+                    else None
+                ),
+                "sent": []
+            }
+
+            state[
+                "items"
+            ][symbol] = record
+
+            status_fa = (
+                "معامله شروع شده"
+                if status == "TRADING"
+                else "هنوز قابل معامله نیست"
+            )
+
+            send_telegram(
+                "🚨 ارز جدید در فیوچرز توبیت\n"
+                f"ارز: "
+                f"{symbol.replace('-SWAP-USDT', '/USDT')}\n"
+                f"وضعیت: {status_fa}\n"
+                "فعلاً ورود نکن؛ "
+                "ربات در حال جمع‌آوری داده است."
+            )
+
+        old_status = str(
+            record.get(
+                "status",
+                "UNKNOWN"
+            )
+        ).upper()
+
+        if old_status != status:
+
+            record[
+                "status"
+            ] = status
+
+            if status == "TRADING":
+
+                record[
+                    "trading_since"
+                ] = now.isoformat()
+
+                record[
+                    "sent"
+                ] = []
+
+                send_telegram(
+                    "🟢 معامله ارز جدید شروع شد\n"
+                    f"ارز: "
+                    f"{symbol.replace('-SWAP-USDT', '/USDT')}\n"
+                    "ربات ۱، ۲ و ۴ ساعت بعد "
+                    "آن را بررسی می‌کند."
+                )
+
+        if record.get(
+            "baseline"
+        ):
+            continue
+
+        if (
+            status != "TRADING"
+            or not record.get(
+                "trading_since"
+            )
+        ):
+            continue
+
+        start_time = (
+            datetime.fromisoformat(
+                record[
+                    "trading_since"
+                ]
+            )
+        )
+
+        age_hours = (
+            (
+                now
+                - start_time
+            ).total_seconds()
+            / 3600
+        )
+
+        sent_hours = {
+            int(x)
+            for x in record.get(
+                "sent",
+                []
+            )
+            if str(x).isdigit()
+        }
+
+        for hour in (
+            1,
+            2,
+            4
+        ):
+
+            if (
+                age_hours < hour
+                or hour
+                in sent_hours
+            ):
+                continue
+
+            try:
+                title, body = analyze(
+                    symbol,
+                    record[
+                        "trading_since"
+                    ],
+                    hour
+                )
+
+                send_telegram(
+                    f"{title} | "
+                    "شکارچی لیست جدید\n\n"
+                    f"{body}\n\n"
+                    "⚠️ معامله خودکار "
+                    "باز نمی‌شود."
+                )
+
+                sent_hours.add(
+                    hour
+                )
+
+                record[
+                    "sent"
+                ] = sorted(
+                    sent_hours
+                )
+
+            except Exception as exc:
+
+                print(
+                    "ANALYSIS_ERROR:",
+                    symbol,
+                    f"{hour}h",
+                    repr(exc)
+                )
+
+    save_state(state)
+
+    print("DONE")
+
+
+if __name__ == "__main__":
+    main()
