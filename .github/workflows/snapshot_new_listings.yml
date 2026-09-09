@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   snapshot-new-listings:
@@ -28,6 +28,40 @@ jobs:
         run: |
           python snapshot_new_listings.py | tee snapshot_output.txt
 
+      - name: Verify snapshot file
+        run: |
+          test -s snapshot_new_listings.json
+
+          python - <<'PY'
+          import json
+          import hashlib
+
+          path = "snapshot_new_listings.json"
+
+          with open(path, "rb") as f:
+              raw = f.read()
+
+          data = json.loads(raw.decode("utf-8"))
+
+          print("SNAPSHOT FILE OK")
+          print("SIZE:", len(raw), "bytes")
+          print("SHA256:", hashlib.sha256(raw).hexdigest())
+          print("ITEMS:", list(data.get("items", {}).keys()))
+          PY
+
+      - name: Save fixed snapshot to cache
+        uses: actions/cache/save@v4
+        with:
+          path: snapshot_new_listings.json
+          key: new-listing-snapshot-v1-${{ github.run_id }}
+
+      - name: Save backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-new-listings-${{ github.run_id }}
+          path: snapshot_new_listings.json
+          retention-days: 90
+
       - name: Show results in Summary
         if: always()
         run: |
@@ -35,17 +69,3 @@ jobs:
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           cat snapshot_output.txt >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Save snapshot to repository
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add snapshot_new_listings.json
-
-          if git diff --cached --quiet; then
-            echo "No snapshot changes to commit."
-          else
-            git commit -m "Save fixed new listing data snapshot"
-            git push
-          fi
