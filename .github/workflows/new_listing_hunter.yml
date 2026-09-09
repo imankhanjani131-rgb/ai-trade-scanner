@@ -10,8 +10,9 @@ permissions:
   contents: read
 
 jobs:
-  new-listing-hunter:
+  new-lististing-hunter:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Checkout
@@ -40,3 +41,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python new_listing_hunter.py
+
+      - name: Save listing state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: new_listing_state.json
+          key: new-listing-state-${{ github.run_id }}
