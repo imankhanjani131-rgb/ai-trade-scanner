@@ -25,47 +25,43 @@ jobs:
           pip install requests
 
       - name: Build fixed snapshot
+        id: build
+        continue-on-error: true
         run: |
-          python snapshot_new_listings.py | tee snapshot_output.txt
+          set +e
+          python snapshot_new_listings.py > snapshot_output.txt 2>&1
+          CODE=$?
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+          cat snapshot_output.txt
+          exit 0
 
-      - name: Verify snapshot file
-        run: |
-          test -s snapshot_new_listings.json
-
-          python - <<'PY'
-          import json
-          import hashlib
-
-          path = "snapshot_new_listings.json"
-
-          with open(path, "rb") as f:
-              raw = f.read()
-
-          data = json.loads(raw.decode("utf-8"))
-
-          print("SNAPSHOT FILE OK")
-          print("SIZE:", len(raw), "bytes")
-          print("SHA256:", hashlib.sha256(raw).hexdigest())
-          print("ITEMS:", list(data.get("items", {}).keys()))
-          PY
-
-      - name: Save fixed snapshot to cache
-        uses: actions/cache/save@v4
-        with:
-          path: snapshot_new_listings.json
-          key: new-listing-snapshot-v1-${{ github.run_id }}
-
-      - name: Save backup artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: snapshot-new-listings-${{ github.run_id }}
-          path: snapshot_new_listings.json
-          retention-days: 90
-
-      - name: Show results in Summary
+      - name: Show full diagnostic in Summary
         if: always()
         run: |
-          echo "## New Listing Data Snapshot" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Snapshot Diagnostic" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Python exit code: ${{ steps.build.outputs.exit_code }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           cat snapshot_output.txt >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify snapshot file
+        if: steps.build.outputs.exit_code == '0'
+        run: |
+          test -s snapshot_new_listings.json
+          echo "SNAPSHOT FILE EXISTS"
+
+      - name: Upload snapshot artifact
+        if: steps.build.outputs.exit_code == '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-new-listings
+          path: snapshot_new_listings.json
+          retention-days: 90
+
+      - name: Fail if Python failed
+        if: steps.build.outputs.exit_code != '0'
+        run: |
+          echo "Snapshot Python script failed."
+          exit 1
