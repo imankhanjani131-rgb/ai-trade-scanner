@@ -1,0 +1,26 @@
+name: Replay New Listing Hunter V1
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replay-new-listings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run Replay New Listing Hunter V1
+        run: |
+          python replay_new_listing_v1.py
