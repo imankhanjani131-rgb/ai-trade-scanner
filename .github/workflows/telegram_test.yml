@@ -1,0 +1,94 @@
+name: Telegram Connection Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  telegram-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Test Telegram Connection
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+          import json
+          import urllib.request
+          import urllib.parse
+
+          token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+
+          if not token:
+              print("ERROR: TELEGRAM_BOT_TOKEN secret is missing")
+              sys.exit(1)
+
+          api = f"https://api.telegram.org/bot{token}"
+
+          try:
+              with urllib.request.urlopen(
+                  api + "/getUpdates",
+                  timeout=20
+              ) as response:
+                  data = json.loads(response.read().decode())
+
+          except Exception as e:
+              print("ERROR getUpdates:", repr(e))
+              sys.exit(1)
+
+          if not data.get("ok"):
+              print("ERROR Telegram:", data)
+              sys.exit(1)
+
+          chat_id = None
+
+          for update in reversed(data.get("result", [])):
+              message = (
+                  update.get("message")
+                  or update.get("edited_message")
+                  or update.get("channel_post")
+              )
+
+              if message:
+                  cid = message.get("chat", {}).get("id")
+
+                  if cid is not None:
+                      chat_id = str(cid)
+                      break
+
+          if not chat_id:
+              print("ERROR: No Telegram chat found.")
+              print("Send a message to the bot, then run this test again.")
+              sys.exit(1)
+
+          text = "✅ اتصال تلگرام ربات با موفقیت تأیید شد"
+
+          payload = urllib.parse.urlencode({
+              "chat_id": chat_id,
+              "text": text
+          }).encode()
+
+          request = urllib.request.Request(
+              api + "/sendMessage",
+              data=payload
+          )
+
+          try:
+              with urllib.request.urlopen(
+                  request,
+                  timeout=20
+              ) as response:
+                  result = json.loads(response.read().decode())
+
+          except Exception as e:
+              print("ERROR sendMessage:", repr(e))
+              sys.exit(1)
+
+          if not result.get("ok"):
+              print("ERROR sending Telegram message:", result)
+              sys.exit(1)
+
+          print("SUCCESS: Telegram message sent.")
+          PY
