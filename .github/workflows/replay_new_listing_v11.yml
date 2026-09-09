@@ -1,0 +1,34 @@
+name: Replay New Listing Hunter V1.1
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replay-new-listings-v11:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run Replay New Listing Hunter V1.1
+        run: |
+          python replay_new_listing_v11.py | tee replay_v11_output.txt
+
+      - name: Show V1.1 Results in Summary
+        if: always()
+        run: |
+          echo "## Replay New Listing Hunter V1.1" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          cat replay_v11_output.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
