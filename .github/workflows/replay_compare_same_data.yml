@@ -25,13 +25,29 @@ jobs:
           pip install requests
 
       - name: Run Same Data Comparison
+        id: compare
+        continue-on-error: true
         run: |
-          python replay_compare_same_data.py | tee compare_output.txt
+          set +e
+          python replay_compare_same_data.py > compare_output.txt 2>&1
+          CODE=$?
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+          cat compare_output.txt
+          exit 0
 
       - name: Show Comparison in Summary
         if: always()
         run: |
           echo "## V1 vs V1.1 vs V1.2 — Same Data" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Python exit code: ${{ steps.compare.outputs.exit_code }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           cat compare_output.txt >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail if comparison failed
+        if: steps.compare.outputs.exit_code != '0'
+        run: |
+          echo "Comparison script failed."
+          exit 1
