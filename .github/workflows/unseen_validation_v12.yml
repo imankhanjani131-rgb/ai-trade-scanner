@@ -1,0 +1,53 @@
+name: Unseen Validation V1.2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unseen-validation-v12:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run Unseen Validation V1.2
+        id: validation
+        continue-on-error: true
+        run: |
+          set +e
+          python unseen_validation_v12.py > unseen_output.txt 2>&1
+          CODE=$?
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+          cat unseen_output.txt
+          exit 0
+
+      - name: Show Results in Summary
+        if: always()
+        run: |
+          echo "## New Listing Hunter V1.2 — Unseen Validation" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Python exit code: ${{ steps.validation.outputs.exit_code }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          cat unseen_output.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail if validation failed
+        if: steps.validation.outputs.exit_code != '0'
+        run: |
+          echo "Validation script failed."
+          exit 1
