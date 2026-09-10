@@ -8,17 +8,26 @@ import requests
 BASE = "https://api.toobit.com"
 TIMEOUT = 25
 
-CHUNK_DAYS = 7
-MAX_HISTORY_DAYS = 60
+REFERENCE_SYMBOLS = [
+    "BTC-SWAP-USDT",
+    "ETH-SWAP-USDT",
+]
+
+REFERENCE_SCAN_DAYS = 60
+REFERENCE_CHUNK_DAYS = 7
+
+BASELINE_PROBE_HOURS = 24
+SEARCH_CHUNK_DAYS = 7
 
 MIN_AGE_HOURS = 76
-MAX_CANDIDATE_AGE_DAYS = 45
+MAX_CANDIDATE_AGE_DAYS = 30
 
 MAX_OUTPUT = 20
+MAX_REQUESTS = 900
 
 
-# این ارزها قبلاً در طراحی، تنظیم یا Validation استفاده شده‌اند
-# و دیگر Unseen محسوب نمی‌شوند.
+# ارزهایی که قبلاً در Tune / Replay / Validation
+# استفاده شده‌اند و دیگر Unseen نیستند.
 EXCLUDED_TOKENS = {
     "RE",
     "GRVT",
@@ -38,12 +47,17 @@ SESSION = requests.Session()
 
 SESSION.headers.update({
     "User-Agent":
-        "ai-trade-scanner-unseen-candidate-finder-v2"
+        "ai-trade-scanner-unseen-candidate-finder-v3"
 })
 
 
+REQUEST_COUNT = 0
+
+
 def to_ms(dt):
-    return int(dt.timestamp() * 1000)
+    return int(
+        dt.timestamp() * 1000
+    )
 
 
 def from_ms(value):
@@ -53,10 +67,27 @@ def from_ms(value):
     )
 
 
-def fmt_time(value):
-    return from_ms(value).strftime(
+def fmt_dt(dt):
+    return dt.strftime(
         "%Y-%m-%d %H:%M UTC"
     )
+
+
+def fmt_ms(value):
+    return fmt_dt(
+        from_ms(value)
+    )
+
+
+def token_from_symbol(symbol):
+    suffix = "-SWAP-USDT"
+
+    if symbol.endswith(suffix):
+        return symbol[
+            :-len(suffix)
+        ]
+
+    return symbol
 
 
 def request_json(
@@ -64,12 +95,25 @@ def request_json(
     params=None,
     retries=4,
 ):
+    global REQUEST_COUNT
+
     last_error = None
 
     for attempt in range(
         1,
         retries + 1,
     ):
+        if (
+            REQUEST_COUNT
+            >= MAX_REQUESTS
+        ):
+            raise RuntimeError(
+                "Request budget reached: "
+                f"{MAX_REQUESTS}"
+            )
+
+        REQUEST_COUNT += 1
+
         try:
             response = SESSION.get(
                 url,
@@ -92,7 +136,7 @@ def request_json(
 
             if attempt < retries:
                 time.sleep(
-                    1.2 * attempt
+                    1.0 * attempt
                 )
 
     raise RuntimeError(
@@ -163,20 +207,7 @@ def normalize_categories(item):
     ]
 
 
-def token_from_symbol(symbol):
-    suffix = "-SWAP-USDT"
-
-    if symbol.endswith(
-        suffix
-    ):
-        return symbol[
-            :-len(suffix)
-        ]
-
-    return symbol
-
-
-def eligible_contract(item):
+def is_crypto_usdt_contract(item):
     if not isinstance(
         item,
         dict,
@@ -224,15 +255,12 @@ def eligible_contract(item):
     ):
         return False
 
-    # دسته New فقط برای محدود کردن تعداد قراردادهاست.
-    # دیگر فرض نمی‌کنیم New یعنی حتماً زیر 10 روز.
-    if "NEW" not in categories:
+    if item.get(
+        "inverse"
+    ) is True:
         return False
 
-    # TradFi / Stock / RWA حذف شود.
-    if "TRADFI" in categories:
-        return False
-
+    # Stock / RWA / TradFi حذف شود.
     if item.get(
         "isRwa"
     ) is True:
@@ -246,6 +274,24 @@ def eligible_contract(item):
     ).strip()
 
     if rwa_type:
+        return False
+
+    blocked_words = (
+        "TRADFI",
+        "STOCK",
+        "FOREX",
+        "COMMODITY",
+        "RWA",
+    )
+
+    joined_categories = " ".join(
+        categories
+    )
+
+    if any(
+        word in joined_categories
+        for word in blocked_words
+    ):
         return False
 
     token = token_from_symbol(
@@ -342,10 +388,12 @@ def fetch_window(
         start_dt
     )
 
-    # انتهای پنجره را exclusive نگه می‌داریم.
     end_ms = to_ms(
         end_dt
     )
+
+    if end_ms <= start_ms:
+        return []
 
     payload = request_json(
         f"{BASE}/quote/v1/klines",
@@ -362,9 +410,9 @@ def fetch_window(
         payload
     )
 
-    # اگر API داده خارج از محدوده برگرداند،
-    # آن را وارد تحلیل نکن.
-    rows = [
+    # اگر API داده خارج از بازه داد،
+    # اجازه نمی‌دهیم وارد تحلیل شود.
+    return [
         row
         for row in rows
         if (
@@ -374,284 +422,291 @@ def fetch_window(
         )
     ]
 
-    return rows
 
-
-def real_trade_rows(rows):
-    return [
-        row
-        for row in rows
-        if row["v"] > 0
-    ]
-
-
-def verify_first_trade(
-    symbol,
-    candidate_row,
-):
-    candidate_dt = from_ms(
-        candidate_row["t"]
-    )
-
-    start_dt = (
-        candidate_dt
-        - timedelta(hours=12)
-    )
-
-    end_dt = (
-        candidate_dt
-        + timedelta(hours=1)
-    )
-
-    try:
-        rows = fetch_window(
-            symbol,
-            start_dt,
-            end_dt,
-        )
-
-    except Exception:
-        return candidate_row
-
-    active = real_trade_rows(
-        rows
-    )
-
-    if not active:
-        return candidate_row
-
-    return min(
-        active,
-        key=lambda x: x["t"],
-    )
-
-
-def discover_first_trade(
+def find_reference_floor(
     symbol,
     now,
 ):
-    collected = {}
-
-    found_any_data = False
-
-    boundary_confirmed = False
-
-    windows_checked = 0
-
     oldest_limit = (
         now
         - timedelta(
-            days=MAX_HISTORY_DAYS
+            days=REFERENCE_SCAN_DAYS
         )
     )
 
     cursor_end = now
 
-    while cursor_end > oldest_limit:
+    found_any = False
+    earliest = None
+    windows_checked = 0
+
+    while (
+        cursor_end
+        > oldest_limit
+    ):
         cursor_start = max(
             oldest_limit,
             cursor_end
             - timedelta(
-                days=CHUNK_DAYS
+                days=REFERENCE_CHUNK_DAYS
             ),
+        )
+
+        rows = fetch_window(
+            symbol,
+            cursor_start,
+            cursor_end,
         )
 
         windows_checked += 1
 
-        try:
-            rows = fetch_window(
-                symbol,
-                cursor_start,
-                cursor_end,
-            )
+        if rows:
+            found_any = True
 
-        except Exception as exc:
-            return {
-                "status":
-                    "REQUEST_ERROR",
-                "symbol":
-                    symbol,
-                "error":
-                    repr(exc),
-                "windows_checked":
-                    windows_checked,
-            }
+            here = rows[0]
 
-        active = real_trade_rows(
-            rows
-        )
-
-        if active:
-            found_any_data = True
-
-            for row in active:
-                collected[
-                    row["t"]
-                ] = row
-
-            earliest_here = min(
-                active,
-                key=lambda x: x["t"],
-            )
+            if (
+                earliest is None
+                or here["t"]
+                < earliest["t"]
+            ):
+                earliest = here
 
             print(
-                "    data:",
-                cursor_start.strftime(
-                    "%Y-%m-%d"
-                ),
-                "→",
-                cursor_end.strftime(
-                    "%Y-%m-%d"
-                ),
-                "| earliest",
-                fmt_time(
-                    earliest_here["t"]
-                ),
-                "| bars",
-                len(active),
+                f"  {symbol} data "
+                f"{cursor_start:%Y-%m-%d}"
+                f" -> "
+                f"{cursor_end:%Y-%m-%d}"
+                f" | earliest "
+                f"{fmt_ms(here['t'])}"
+                f" | bars "
+                f"{len(rows)}"
             )
 
         else:
             print(
-                "    empty:",
-                cursor_start.strftime(
-                    "%Y-%m-%d"
-                ),
-                "→",
-                cursor_end.strftime(
-                    "%Y-%m-%d"
-                ),
+                f"  {symbol} empty "
+                f"{cursor_start:%Y-%m-%d}"
+                f" -> "
+                f"{cursor_end:%Y-%m-%d}"
             )
 
             # چون از امروز به عقب می‌رویم،
-            # اولین پنجره خالی قبل از پنجره‌های دارای دیتا
-            # مرز شروع قرارداد را تأیید می‌کند.
-            if found_any_data:
-                boundary_confirmed = True
+            # بعد از دیدن دیتا، اولین بازه خالی
+            # مرز تاریخچه API را مشخص می‌کند.
+            if found_any:
                 break
 
         cursor_end = cursor_start
 
-        time.sleep(0.08)
+        time.sleep(0.03)
 
-    if not found_any_data:
-        return {
-            "status":
-                "NO_DATA",
-            "symbol":
+    if earliest is None:
+        raise RuntimeError(
+            "No reference Kline history "
+            f"found for {symbol}"
+        )
+
+    return {
+        "symbol":
+            symbol,
+        "floor_ms":
+            earliest["t"],
+        "floor_dt":
+            from_ms(
+                earliest["t"]
+            ),
+        "windows_checked":
+            windows_checked,
+    }
+
+
+def find_common_reference_floor(
+    now,
+):
+    refs = []
+
+    print(
+        "REFERENCE HISTORY CHECK"
+    )
+
+    print(
+        "-" * 88
+    )
+
+    for symbol in (
+        REFERENCE_SYMBOLS
+    ):
+        result = (
+            find_reference_floor(
                 symbol,
-            "windows_checked":
-                windows_checked,
-        }
+                now,
+            )
+        )
 
-    earliest = min(
-        collected.values(),
-        key=lambda x: x["t"],
+        refs.append(
+            result
+        )
+
+        print(
+            f"  -> {symbol} floor: "
+            f"{fmt_dt(result['floor_dt'])}"
+        )
+
+        print()
+
+    # محافظه‌کارانه:
+    # اگر BTC و ETH کمی فرق داشتند،
+    # دیرترین مرز را انتخاب می‌کنیم.
+    common_floor = max(
+        x["floor_dt"]
+        for x in refs
     )
 
-    if not boundary_confirmed:
-        return {
-            "status":
-                "OLDER_THAN_HISTORY",
-            "symbol":
-                symbol,
-            "earliest_seen":
-                earliest["t"],
-            "windows_checked":
-                windows_checked,
-        }
-
-    earliest = verify_first_trade(
-        symbol,
-        earliest,
-    )
-
-    first_dt = from_ms(
-        earliest["t"]
-    )
-
-    age_hours = (
-        now - first_dt
+    spread_hours = (
+        max(
+            x["floor_dt"]
+            for x in refs
+        )
+        -
+        min(
+            x["floor_dt"]
+            for x in refs
+        )
     ).total_seconds() / 3600
 
-    if age_hours < MIN_AGE_HOURS:
+    return (
+        refs,
+        common_floor,
+        spread_hours,
+    )
+
+
+def find_first_kline_after_floor(
+    symbol,
+    floor_dt,
+    now,
+):
+    # اول فقط 24 ساعت اول بعد از
+    # مرز مشترک BTC/ETH را نگاه می‌کنیم.
+    baseline_end = min(
+        floor_dt
+        + timedelta(
+            hours=BASELINE_PROBE_HOURS
+        ),
+        now,
+    )
+
+    baseline_rows = (
+        fetch_window(
+            symbol,
+            floor_dt,
+            baseline_end,
+        )
+    )
+
+    # اگر در همان ابتدای مرز تاریخچه
+    # دیتا دارد، این ارز جدید محسوب نمی‌شود.
+    if baseline_rows:
         return {
             "status":
-                "TOO_NEW",
-            "symbol":
-                symbol,
+                "PREEXISTING_AT_FLOOR",
             "first_row":
-                earliest,
-            "age_hours":
-                age_hours,
-            "windows_checked":
-                windows_checked,
+                baseline_rows[0],
         }
 
-    if (
-        age_hours
-        > MAX_CANDIDATE_AGE_DAYS
-        * 24
-    ):
-        return {
-            "status":
-                "TOO_OLD_FOR_BATCH",
-            "symbol":
-                symbol,
-            "first_row":
-                earliest,
-            "age_hours":
-                age_hours,
-            "windows_checked":
-                windows_checked,
-        }
+    cursor = baseline_end
+
+    # اگر در 24 ساعت اول دیتا نداشت،
+    # به جلو حرکت می‌کنیم تا اولین
+    # Kline واقعی API را پیدا کنیم.
+    while cursor < now:
+        chunk_end = min(
+            cursor
+            + timedelta(
+                days=SEARCH_CHUNK_DAYS
+            ),
+            now,
+        )
+
+        rows = fetch_window(
+            symbol,
+            cursor,
+            chunk_end,
+        )
+
+        if rows:
+            first = rows[0]
+
+            first_dt = from_ms(
+                first["t"]
+            )
+
+            # یک بررسی دوباره در 24 ساعت
+            # قبل از اولین کندل پیدا شده.
+            verify_start = max(
+                floor_dt,
+                first_dt
+                - timedelta(
+                    hours=24
+                ),
+            )
+
+            if (
+                verify_start
+                < first_dt
+            ):
+                verify_rows = (
+                    fetch_window(
+                        symbol,
+                        verify_start,
+                        first_dt,
+                    )
+                )
+
+                if verify_rows:
+                    first = (
+                        verify_rows[0]
+                    )
+
+            return {
+                "status":
+                    "API_NEW_CANDIDATE",
+                "first_row":
+                    first,
+            }
+
+        cursor = chunk_end
+
+        time.sleep(0.03)
 
     return {
         "status":
-            "USABLE",
-        "symbol":
-            symbol,
-        "first_row":
-            earliest,
-        "age_hours":
-            age_hours,
-        "windows_checked":
-            windows_checked,
+            "NO_DATA_AFTER_FLOOR",
     }
 
 
 def main():
     print(
         "TOOBIT UNSEEN "
-        "CANDIDATE FINDER V2"
+        "CANDIDATE FINDER V3"
     )
 
     print(
-        "Search method: "
-        "7-day windows backwards."
+        "Method: compare each active "
+        "crypto contract against the "
+        "common BTC/ETH 15m history floor."
     )
 
     print(
-        "Maximum history scan:",
-        MAX_HISTORY_DAYS,
-        "days",
+        "A symbol is NOT considered new "
+        "if it already has Klines in the "
+        "first 24h of that floor."
     )
 
     print(
-        "Minimum listing age:",
-        MIN_AGE_HOURS,
-        "hours",
-    )
-
-    print(
-        "Maximum candidate age:",
-        MAX_CANDIDATE_AGE_DAYS,
-        "days",
-    )
-
-    print(
-        "Previously used symbols "
-        "are excluded."
+        "Previously used tuning/test "
+        "symbols are excluded."
     )
 
     print()
@@ -667,37 +722,125 @@ def main():
         len(contracts),
     )
 
-    eligible = [
-        item
-        for item in contracts
-        if eligible_contract(
-            item
+    print()
+
+    refs, common_floor, spread_hours = (
+        find_common_reference_floor(
+            now
         )
-    ]
+    )
 
     print(
-        "Eligible New crypto "
-        "contracts:",
-        len(eligible),
+        "=" * 88
+    )
+
+    print(
+        "COMMON REFERENCE FLOOR:",
+        fmt_dt(
+            common_floor
+        ),
+    )
+
+    print(
+        "Reference floor spread:",
+        f"{spread_hours:.2f}h",
+    )
+
+    print(
+        "=" * 88
     )
 
     print()
 
-    usable = []
+    if spread_hours > 6:
+        print(
+            "WARNING: BTC/ETH history "
+            "floors differ by more "
+            "than 6 hours."
+        )
+
+        print(
+            "Results will be treated "
+            "as diagnostic only."
+        )
+
+        print()
+
+    eligible = [
+        item
+        for item in contracts
+        if is_crypto_usdt_contract(
+            item
+        )
+    ]
+
+    # دسته New اول اسکن می‌شود،
+    # ولی دیگر محدود به New نیستیم.
+    eligible.sort(
+        key=lambda item: (
+            "NEW"
+            not in [
+                x.upper()
+                for x in
+                normalize_categories(
+                    item
+                )
+            ],
+            str(
+                item.get(
+                    "symbol",
+                    "",
+                )
+            ),
+        )
+    )
+
+    print(
+        "Active crypto USDT "
+        "contracts to scan:",
+        len(eligible),
+    )
+
+    print(
+        "Request budget:",
+        MAX_REQUESTS,
+    )
+
+    print()
+
+    candidates = []
 
     counts = {
-        "USABLE": 0,
-        "TOO_NEW": 0,
-        "TOO_OLD_FOR_BATCH": 0,
-        "OLDER_THAN_HISTORY": 0,
-        "NO_DATA": 0,
-        "REQUEST_ERROR": 0,
+        "PREEXISTING_AT_FLOOR":
+            0,
+        "API_NEW_CANDIDATE":
+            0,
+        "TOO_NEW":
+            0,
+        "TOO_OLD_FOR_BATCH":
+            0,
+        "NO_DATA_AFTER_FLOOR":
+            0,
+        "REQUEST_ERROR":
+            0,
     }
 
     for number, item in enumerate(
         eligible,
         start=1,
     ):
+        if (
+            REQUEST_COUNT
+            >= MAX_REQUESTS - 5
+        ):
+            print(
+                "REQUEST BUDGET "
+                "NEAR LIMIT - "
+                "STOPPING SCAN"
+            )
+
+            break
+
         symbol = str(
             item.get(
                 "symbol",
@@ -705,186 +848,236 @@ def main():
             )
         ).upper()
 
-        print(
-            "=" * 88
+        token = (
+            token_from_symbol(
+                symbol
+            )
+        )
+
+        categories = (
+            normalize_categories(
+                item
+            )
         )
 
         print(
-            f"[{number}/{len(eligible)}] "
+            f"[{number}/"
+            f"{len(eligible)}] "
             f"{symbol}"
         )
 
-        result = (
-            discover_first_trade(
-                symbol,
-                now,
+        try:
+            result = (
+                find_first_kline_after_floor(
+                    symbol,
+                    common_floor,
+                    now,
+                )
             )
-        )
+
+        except Exception as exc:
+            counts[
+                "REQUEST_ERROR"
+            ] += 1
+
+            print(
+                "  ❌ REQUEST ERROR:",
+                repr(exc),
+            )
+
+            print()
+
+            continue
 
         status = result[
             "status"
         ]
 
-        if status not in counts:
+        if (
+            status
+            == "PREEXISTING_AT_FLOOR"
+        ):
             counts[
-                status
-            ] = 0
+                "PREEXISTING_AT_FLOOR"
+            ] += 1
+
+            print(
+                "  ⚪ PREEXISTING AT "
+                "API HISTORY FLOOR"
+            )
+
+            print()
+
+            continue
+
+        if (
+            status
+            == "NO_DATA_AFTER_FLOOR"
+        ):
+            counts[
+                "NO_DATA_AFTER_FLOOR"
+            ] += 1
+
+            print(
+                "  ❌ NO DATA AFTER "
+                "REFERENCE FLOOR"
+            )
+
+            print()
+
+            continue
+
+        first = result[
+            "first_row"
+        ]
+
+        first_dt = from_ms(
+            first["t"]
+        )
+
+        age_hours = (
+            now - first_dt
+        ).total_seconds() / 3600
+
+        # برای ارزیابی 72 ساعته
+        # هنوز بیش از حد جدید است.
+        if (
+            age_hours
+            < MIN_AGE_HOURS
+        ):
+            counts[
+                "TOO_NEW"
+            ] += 1
+
+            print(
+                "  🟡 TOO NEW FOR "
+                "72H VALIDATION"
+            )
+
+            print(
+                "  API first Kline:",
+                fmt_dt(
+                    first_dt
+                ),
+            )
+
+            print(
+                "  Age:",
+                f"{age_hours:.1f}h",
+            )
+
+            print()
+
+            continue
+
+        # فقط لیستینگ‌های نسبتاً جدید
+        # وارد Batch فعلی شوند.
+        if (
+            age_hours
+            > MAX_CANDIDATE_AGE_DAYS
+            * 24
+        ):
+            counts[
+                "TOO_OLD_FOR_BATCH"
+            ] += 1
+
+            print(
+                "  ⚪ API START TOO OLD "
+                "FOR CURRENT BATCH"
+            )
+
+            print(
+                "  API first Kline:",
+                fmt_dt(
+                    first_dt
+                ),
+            )
+
+            print(
+                "  Age:",
+                f"{age_hours:.1f}h",
+            )
+
+            print()
+
+            continue
 
         counts[
-            status
+            "API_NEW_CANDIDATE"
         ] += 1
 
-        if status == "USABLE":
-            first = result[
-                "first_row"
-            ]
-
-            token = (
-                token_from_symbol(
-                    symbol
-                )
-            )
-
-            first_dt = from_ms(
-                first["t"]
-            )
-
-            candidate = {
-                "token":
-                    token,
-                "symbol":
-                    symbol,
-                "listing_date":
-                    first_dt.strftime(
-                        "%Y-%m-%d"
-                    ),
-                "first_traded_utc":
-                    fmt_time(
-                        first["t"]
-                    ),
-                "first_price":
-                    first["o"],
-                "age_hours":
-                    result[
-                        "age_hours"
-                    ],
-                "windows_checked":
-                    result[
-                        "windows_checked"
-                    ],
-            }
-
-            usable.append(
-                candidate
-            )
-
-            print(
-                "  ✅ USABLE"
-            )
-
-            print(
-                "  First trade:",
-                candidate[
-                    "first_traded_utc"
-                ],
-            )
-
-            print(
-                "  Age:",
-                f"{candidate['age_hours']:.1f}h",
-            )
-
-        elif status == "TOO_NEW":
-            print(
-                "  🟡 TOO NEW"
-            )
-
-            print(
-                "  First trade:",
-                fmt_time(
-                    result[
-                        "first_row"
-                    ]["t"]
+        candidate = {
+            "token":
+                token,
+            "symbol":
+                symbol,
+            "api_first_kline_utc":
+                fmt_dt(
+                    first_dt
                 ),
-            )
-
-            print(
-                "  Age:",
-                f"{result['age_hours']:.1f}h",
-            )
-
-        elif (
-            status
-            == "TOO_OLD_FOR_BATCH"
-        ):
-            print(
-                "  ⚪ TOO OLD FOR "
-                "CURRENT BATCH"
-            )
-
-            print(
-                "  First trade:",
-                fmt_time(
-                    result[
-                        "first_row"
-                    ]["t"]
+            "listing_date":
+                first_dt.strftime(
+                    "%Y-%m-%d"
                 ),
-            )
+            "age_hours":
+                age_hours,
+            "first_price":
+                first["o"],
+            "categories":
+                categories,
+        }
 
-            print(
-                "  Age:",
-                f"{result['age_hours']:.1f}h",
-            )
+        candidates.append(
+            candidate
+        )
 
-        elif (
-            status
-            == "OLDER_THAN_HISTORY"
-        ):
-            print(
-                "  ⚪ START NOT FOUND "
-                "WITHIN HISTORY WINDOW"
-            )
+        print(
+            "  ✅ API NEW CANDIDATE"
+        )
 
-            print(
-                "  Earliest visible:",
-                fmt_time(
-                    result[
-                        "earliest_seen"
-                    ]
-                ),
-            )
+        print(
+            "  First Kline:",
+            candidate[
+                "api_first_kline_utc"
+            ],
+        )
 
-        elif status == "NO_DATA":
-            print(
-                "  ❌ NO DATA"
-            )
+        print(
+            "  Age:",
+            f"{age_hours:.1f}h",
+        )
 
-        else:
-            print(
-                "  ❌ REQUEST ERROR"
-            )
-
-            print(
-                "  ",
-                result.get(
-                    "error",
-                    "",
-                ),
-            )
+        print(
+            "  Categories:",
+            categories,
+        )
 
         print()
 
-        time.sleep(0.10)
+        if (
+            len(candidates)
+            >= MAX_OUTPUT
+        ):
+            print(
+                f"Reached MAX_OUTPUT="
+                f"{MAX_OUTPUT}; "
+                "stopping candidate "
+                "collection."
+            )
 
-    # قدیمی‌ترهای قابل‌قبول اول،
-    # چون پنجره 72H کامل‌تری دارند.
-    usable.sort(
+            break
+
+        time.sleep(0.03)
+
+    # قدیمی‌ترهای واجد شرایط اول،
+    # چون Future 72H کامل‌تری دارند.
+    candidates.sort(
         key=lambda x:
             x["age_hours"],
         reverse=True,
     )
 
-    selected = usable[
+    selected = candidates[
         :MAX_OUTPUT
     ]
 
@@ -892,11 +1085,27 @@ def main():
         "generated_at_utc":
             now.isoformat(),
         "finder_version":
-            "V2",
-        "chunk_days":
-            CHUNK_DAYS,
-        "max_history_days":
-            MAX_HISTORY_DAYS,
+            "V3",
+        "reference_symbols":
+            [
+                {
+                    "symbol":
+                        x["symbol"],
+                    "floor_utc":
+                        fmt_dt(
+                            x["floor_dt"]
+                        ),
+                }
+                for x in refs
+            ],
+        "common_reference_floor_utc":
+            fmt_dt(
+                common_floor
+            ),
+        "reference_floor_spread_hours":
+            spread_hours,
+        "baseline_probe_hours":
+            BASELINE_PROBE_HOURS,
         "minimum_age_hours":
             MIN_AGE_HOURS,
         "maximum_candidate_age_days":
@@ -905,8 +1114,8 @@ def main():
             sorted(
                 EXCLUDED_TOKENS
             ),
-        "usable_count":
-            len(usable),
+        "request_count":
+            REQUEST_COUNT,
         "selected_count":
             len(selected),
         "candidates":
@@ -916,7 +1125,7 @@ def main():
     }
 
     with open(
-        "unseen_candidates.json",
+        "unseen_candidates_v3.json",
         "w",
         encoding="utf-8",
     ) as f:
@@ -928,12 +1137,13 @@ def main():
         )
 
     print()
+
     print(
         "#" * 88
     )
 
     print(
-        "UNSEEN CANDIDATES V2"
+        "UNSEEN CANDIDATES V3"
     )
 
     print(
@@ -942,7 +1152,7 @@ def main():
 
     if not selected:
         print(
-            "NO USABLE UNSEEN "
+            "NO API-NEW USABLE "
             "CANDIDATES FOUND"
         )
 
@@ -955,18 +1165,22 @@ def main():
                 f"{i}. "
                 f"{item['symbol']}"
                 f" | first "
-                f"{item['first_traded_utc']}"
+                f"{item['api_first_kline_utc']}"
                 f" | age "
                 f"{item['age_hours']:.1f}h"
+                f" | categories "
+                f"{item['categories']}"
             )
 
     print()
+
     print(
         "#" * 88
     )
 
     print(
-        "READY-TO-PASTE TESTS BLOCK"
+        "READY-TO-PASTE "
+        "TESTS BLOCK"
     )
 
     print(
@@ -1001,59 +1215,64 @@ def main():
     )
 
     print()
-    print(
-        "#" * 88
-    )
-
-    print(
-        "SUMMARY V2"
-    )
 
     print(
         "#" * 88
     )
 
     print(
-        "Eligible contracts scanned:",
+        "SUMMARY V3"
+    )
+
+    print(
+        "#" * 88
+    )
+
+    print(
+        "Common BTC/ETH history floor:",
+        fmt_dt(
+            common_floor
+        ),
+    )
+
+    print(
+        "Active crypto contracts "
+        "considered:",
         len(eligible),
     )
 
     print(
-        "Usable unseen candidates:",
-        len(usable),
+        "Preexisting at history floor:",
+        counts[
+            "PREEXISTING_AT_FLOOR"
+        ],
     )
 
     print(
-        "Selected for validation:",
-        len(selected),
+        "API-new candidates:",
+        counts[
+            "API_NEW_CANDIDATE"
+        ],
     )
 
     print(
-        "Too new:",
+        "Too new for 72H validation:",
         counts[
             "TOO_NEW"
         ],
     )
 
     print(
-        "Too old for batch:",
+        "Too old for current batch:",
         counts[
             "TOO_OLD_FOR_BATCH"
         ],
     )
 
     print(
-        "Start older than "
-        "history window:",
+        "No data after floor:",
         counts[
-            "OLDER_THAN_HISTORY"
-        ],
-    )
-
-    print(
-        "No data:",
-        counts[
-            "NO_DATA"
+            "NO_DATA_AFTER_FLOOR"
         ],
     )
 
@@ -1065,20 +1284,38 @@ def main():
     )
 
     print(
+        "Requests used:",
+        REQUEST_COUNT,
+        "/",
+        MAX_REQUESTS,
+    )
+
+    print(
+        "Selected for next step:",
+        len(selected),
+    )
+
+    print(
         "Output file: "
-        "unseen_candidates.json"
+        "unseen_candidates_v3.json"
     )
 
     if len(selected) >= 5:
         print(
-            "STATUS: READY FOR "
-            "V1.2 UNSEEN VALIDATION"
+            "STATUS: CANDIDATE "
+            "SHORTLIST READY"
+        )
+
+        print(
+            "NEXT: verify official "
+            "Toobit listing dates "
+            "before V1.2 validation."
         )
 
     else:
         print(
             "STATUS: INSUFFICIENT "
-            "USABLE CANDIDATES"
+            "API CANDIDATES"
         )
 
         print(
