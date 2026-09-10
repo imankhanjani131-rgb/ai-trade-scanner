@@ -1,0 +1,104 @@
+name: Forward Validation V1.2
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: forward-validation-v12
+  cancel-in-progress: false
+
+jobs:
+  forward-shadow-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run Forward Validation
+        id: forward
+        continue-on-error: true
+        run: |
+          set +e
+
+          python forward_validation_v12.py > forward_output.txt 2>&1
+
+          CODE=$?
+
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+
+          cat forward_output.txt
+
+          exit 0
+
+      - name: Show Results in Summary
+        if: always()
+        run: |
+          echo "## New Listing Hunter V1.2 — Forward Shadow Validation" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Python exit code: ${{ steps.forward.outputs.exit_code }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+
+          cat forward_output.txt >> "$GITHUB_STEP_SUMMARY" || true
+
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save Persistent State
+        if: steps.forward.outputs.exit_code == '0'
+        run: |
+          CHANGED="NO"
+
+          if [ -f forward_state_changed.txt ]; then
+            CHANGED=$(cat forward_state_changed.txt)
+          fi
+
+          echo "STATE_CHANGED=$CHANGED"
+
+          if [ "$CHANGED" != "YES" ]; then
+            echo "No state change. Nothing to save."
+            exit 0
+          fi
+
+          if [ ! -f forward_validation_state.json ]; then
+            echo "State file not found."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add forward_validation_state.json
+
+          if git diff --cached --quiet; then
+            echo "No Git changes detected."
+            exit 0
+          fi
+
+          git commit -m "Update V1.2 forward validation state [skip ci]"
+
+          git push
+
+      - name: Fail if Python Failed
+        if: steps.forward.outputs.exit_code != '0'
+        run: |
+          echo "Forward validation script failed."
+          exit 1
