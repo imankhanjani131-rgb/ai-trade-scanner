@@ -495,5 +495,6 @@
   ],
   "mode": "FORWARD_SHADOW",
   "state_version": 1,
-  "strategy": "NEW_LISTING_HUNTER_V1.2"
+  "strategy": "NEW_LISTING_HUNTER_V1.2",
+  "telegram_setup_notified": false
 }
