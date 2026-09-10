@@ -34,6 +34,11 @@ TESTS = {
     },
 }
 
+SESSION = requests.Session()
+SESSION.headers.update({
+    "User-Agent": "ai-trade-scanner-v12-unseen-validation/2.0"
+})
+
 
 def to_ms(dt):
     return int(dt.timestamp() * 1000)
@@ -61,29 +66,89 @@ def request_json(url, params=None, retries=4):
 
     for attempt in range(1, retries + 1):
         try:
-            r = requests.get(
+            response = SESSION.get(
                 url,
                 params=params,
                 timeout=TIMEOUT,
             )
-            r.raise_for_status()
-            return r.json()
+            response.raise_for_status()
+            return response.json()
 
         except Exception as exc:
             last_error = exc
-
             print(
-                f"REQUEST ERROR "
-                f"{attempt}/{retries}: "
-                f"{repr(exc)}"
+                f"REQUEST ERROR {attempt}/{retries}: {repr(exc)}"
             )
 
             if attempt < retries:
-                time.sleep(attempt)
+                time.sleep(1.2 * attempt)
 
     raise RuntimeError(
-        f"Request failed: {last_error!r}"
+        f"Request failed after {retries} attempts: {last_error!r}"
     )
+
+
+def extract_contract_items(payload):
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ("contracts", "symbols"):
+        items = payload.get(key)
+        if isinstance(items, list):
+            return items
+
+    data = payload.get("data")
+
+    if isinstance(data, dict):
+        for key in ("contracts", "symbols"):
+            items = data.get(key)
+            if isinstance(items, list):
+                return items
+
+    return []
+
+
+def fetch_contracts():
+    payload = request_json(
+        f"{BASE}/api/v1/exchangeInfo"
+    )
+    return extract_contract_items(payload)
+
+
+def resolve_symbol(wanted_symbol, token, contracts):
+    wanted = wanted_symbol.upper()
+    token = token.upper()
+
+    symbols = []
+
+    for item in contracts:
+        if not isinstance(item, dict):
+            continue
+
+        if item.get("isRwa") is True:
+            continue
+
+        symbol = str(
+            item.get("symbol", "")
+        ).upper()
+
+        if symbol:
+            symbols.append(symbol)
+
+    if wanted in symbols:
+        return wanted, []
+
+    candidates = [
+        symbol
+        for symbol in symbols
+        if token in symbol
+        and symbol.endswith("-SWAP-USDT")
+    ]
+
+    if len(candidates) == 1:
+        return candidates[0], candidates
+
+    return wanted, candidates
 
 
 def extract_rows(payload):
@@ -136,11 +201,22 @@ def extract_rows(payload):
 
         rows.append(row)
 
-    rows.sort(
-        key=lambda x: x["t"]
+    return rows
+
+
+def fetch_chunk(symbol, start_dt, end_dt):
+    payload = request_json(
+        f"{BASE}/quote/v1/klines",
+        params={
+            "symbol": symbol,
+            "interval": "15m",
+            "startTime": to_ms(start_dt),
+            "endTime": to_ms(end_dt),
+            "limit": 1000,
+        },
     )
 
-    return rows
+    return extract_rows(payload)
 
 
 def fetch_symbol(symbol, listing_date):
@@ -150,23 +226,63 @@ def fetch_symbol(symbol, listing_date):
         tzinfo=timezone.utc
     )
 
+    now = datetime.now(
+        timezone.utc
+    )
+
     end = min(
         start + timedelta(days=7),
-        datetime.now(timezone.utc),
+        now,
     )
 
-    payload = request_json(
-        f"{BASE}/quote/v1/klines",
-        params={
-            "symbol": symbol,
-            "interval": "15m",
-            "startTime": to_ms(start),
-            "endTime": to_ms(end),
-            "limit": 1000,
-        },
+    if end <= start:
+        return []
+
+    chunk_size = timedelta(
+        hours=12
     )
 
-    return extract_rows(payload)
+    cursor = start
+    by_time = {}
+
+    while cursor < end:
+        chunk_end = min(
+            cursor + chunk_size,
+            end,
+        )
+
+        try:
+            rows = fetch_chunk(
+                symbol,
+                cursor,
+                chunk_end,
+            )
+
+        except Exception as exc:
+            print(
+                "CHUNK ERROR:",
+                cursor.isoformat(),
+                "->",
+                chunk_end.isoformat(),
+                repr(exc),
+            )
+            rows = []
+
+        for row in rows:
+            if (
+                to_ms(start)
+                <= row["t"]
+                <= to_ms(end)
+            ):
+                by_time[row["t"]] = row
+
+        cursor = chunk_end
+        time.sleep(0.08)
+
+    return sorted(
+        by_time.values(),
+        key=lambda x: x["t"],
+    )
 
 
 def first_trade_index(rows):
@@ -263,7 +379,6 @@ def base_features(sample):
 
     if vol_ratio >= 1.50:
         score += 2
-
     elif vol_ratio >= 1.15:
         score += 1
 
@@ -294,10 +409,10 @@ def momentum_features(sample):
     if len(sample) < 4:
         return None
 
-    c = sample[:4]
+    candles = sample[:4]
 
-    first_half = c[:2]
-    second_half = c[2:]
+    first_half = candles[:2]
+    second_half = candles[2:]
 
     vol1 = avg(
         [x["v"] for x in first_half]
@@ -314,14 +429,14 @@ def momentum_features(sample):
     )
 
     high = max(
-        x["h"] for x in c
+        x["h"] for x in candles
     )
 
     low = min(
-        x["l"] for x in c
+        x["l"] for x in candles
     )
 
-    close = c[-1]["c"]
+    close = candles[-1]["c"]
 
     close_strength = (
         (close - low)
@@ -331,18 +446,17 @@ def momentum_features(sample):
     )
 
     first_half_high = max(
-        x["h"]
-        for x in first_half
+        x["h"] for x in first_half
     )
 
     first_half_close = max(
-        x["c"]
-        for x in first_half
+        x["c"] for x in first_half
     )
 
     breakout = (
-        c[-1]["h"] > first_half_high
-        or c[-1]["c"] > first_half_close
+        candles[-1]["h"] > first_half_high
+        or
+        candles[-1]["c"] > first_half_close
     )
 
     second_half_green = sum(
@@ -356,21 +470,19 @@ def momentum_features(sample):
     )
 
     gain = pct(
-        c[-1]["c"],
-        c[0]["o"],
+        candles[-1]["c"],
+        candles[0]["o"],
     )
 
     points = 0
 
     if vol_accel >= 1.10:
         points += 2
-
     elif vol_accel >= 0.95:
         points += 1
 
     if close_strength >= 0.72:
         points += 2
-
     elif close_strength >= 0.58:
         points += 1
 
@@ -448,11 +560,9 @@ def future_stats(
     entry,
     hours=72,
 ):
-    max_bars = hours * 4
-
     future = candles[
         entry_index + 1:
-        entry_index + 1 + max_bars
+        entry_index + 1 + hours * 4
     ]
 
     if not future:
@@ -461,47 +571,40 @@ def future_stats(
             "max_down": 0.0,
         }
 
-    high = max(
+    highest = max(
         x["h"] for x in future
     )
 
-    low = min(
+    lowest = min(
         x["l"] for x in future
     )
 
     return {
         "max_up": pct(
-            high,
+            highest,
             entry,
         ),
         "max_down": pct(
-            low,
+            lowest,
             entry,
         ),
     }
 
 
-def target_before_stop(
+def target_stop_path(
     candles,
     entry_index,
     entry,
     hours=72,
 ):
-    stop_price = (
-        entry * 0.92
-    )
+    stop_price = entry * 0.92
 
-    tp1 = (
-        entry * 1.10
-    )
-
-    tp2 = (
-        entry * 1.20
-    )
-
-    tp3 = (
-        entry * 1.30
-    )
+    target_prices = {
+        10: entry * 1.10,
+        15: entry * 1.15,
+        20: entry * 1.20,
+        30: entry * 1.30,
+    }
 
     future = candles[
         entry_index + 1:
@@ -512,52 +615,77 @@ def target_before_stop(
 
     for candle in future:
 
-        # اگر در یک کندل هم SL و هم TP لمس شوند،
-        # محافظه‌کارانه SL را اول حساب می‌کنیم.
         if candle["l"] <= stop_price:
 
             if best_target == 0:
-                return "STOP_BEFORE_TP"
+                return {
+                    "best_target": 0,
+                    "stopped": True,
+                    "label": "STOP -8% BEFORE +10%",
+                }
 
-            return (
-                f"TP{best_target}_THEN_STOP"
-            )
+            return {
+                "best_target": best_target,
+                "stopped": True,
+                "label": (
+                    f"+{best_target}% THEN STOP -8%"
+                ),
+            }
 
-        if (
-            best_target < 3
-            and candle["h"] >= tp3
+        for target in (
+            10,
+            15,
+            20,
+            30,
         ):
-            best_target = 3
+            if (
+                candle["h"]
+                >= target_prices[target]
+            ):
+                best_target = max(
+                    best_target,
+                    target,
+                )
 
-        elif (
-            best_target < 2
-            and candle["h"] >= tp2
-        ):
-            best_target = 2
+    if best_target > 0:
+        return {
+            "best_target": best_target,
+            "stopped": False,
+            "label": (
+                f"+{best_target}% NO -8% STOP"
+            ),
+        }
 
-        elif (
-            best_target < 1
-            and candle["h"] >= tp1
-        ):
-            best_target = 1
+    return {
+        "best_target": 0,
+        "stopped": False,
+        "label": "NO +10% / NO -8%",
+    }
 
-    if best_target == 3:
-        return "TP3"
 
-    if best_target == 2:
-        return "TP2"
+def ready_quality(path):
+    best = path["best_target"]
 
-    if best_target == 1:
-        return "TP1"
+    if best >= 20:
+        return "STRONG"
 
-    return "NO_TP_NO_STOP"
+    if best >= 10:
+        return "GOOD"
+
+    if path["stopped"]:
+        return "BAD"
+
+    return "FLAT"
 
 
 def evaluate_symbol(candles):
     checkpoints = []
 
-    for hour in (1, 2, 4):
-
+    for hour in (
+        1,
+        2,
+        4,
+    ):
         needed = hour * 4
 
         if len(candles) < needed:
@@ -587,6 +715,12 @@ def evaluate_symbol(candles):
             base["price"],
         )
 
+        path = target_stop_path(
+            candles,
+            needed - 1,
+            base["price"],
+        )
+
         checkpoints.append({
             "hour": hour,
             "label": label,
@@ -598,6 +732,7 @@ def evaluate_symbol(candles):
             "max_down": stats["max_down"],
             "momentum": momentum,
             "entry_index": needed - 1,
+            "path": path,
         })
 
     return checkpoints
@@ -611,69 +746,116 @@ def first_ready(checkpoints):
     return None
 
 
-def classify_signal_quality(result):
-    up = result["max_up"]
-    down = result["max_down"]
+def best_missed_opportunity(
+    checkpoints,
+):
+    best_item = None
+    best_target = 0
 
-    if up >= 20:
-        return "STRONG"
+    for item in checkpoints:
 
-    if up >= 10:
-        return "GOOD"
+        path = item["path"]
 
-    if up >= 5:
-        return "WEAK"
+        target = path[
+            "best_target"
+        ]
 
-    if down <= -8:
-        return "BAD"
+        if target > best_target:
+            best_target = target
+            best_item = item
 
-    return "FLAT"
+    if (
+        best_item is not None
+        and best_target >= 15
+    ):
+        return best_item
+
+    return None
 
 
 def main():
     print(
         "NEW LISTING HUNTER V1.2 "
-        "- UNSEEN VALIDATION"
+        "- UNSEEN VALIDATION V2"
     )
 
     print(
-        "No tuning symbols are included "
-        "in this batch."
+        "V1.2 logic is NOT changed."
     )
 
     print(
-        "READY signal evaluation window: "
-        "72 hours"
+        "NO-READY opportunities are now "
+        "checked on 1H / 2H / 4H."
     )
 
     print(
-        "Diagnostic SL: -8%"
+        "Path rule: target must happen "
+        "BEFORE diagnostic -8% stop."
     )
 
     print(
-        "Diagnostic targets: "
-        "+10% / +20% / +30%"
+        "Evaluation window: 72 hours."
     )
 
     print()
 
-    ready_count = 0
-    strong_good = 0
-    bad_count = 0
-    missed_pumps = 0
-    usable_symbols = 0
+    try:
+        contracts = fetch_contracts()
 
-    results = {}
+        print(
+            "Contracts discovered:",
+            len(contracts),
+        )
+
+    except Exception as exc:
+        print(
+            "EXCHANGE INFO ERROR:",
+            repr(exc),
+        )
+        contracts = []
+
+    print()
+
+    usable_symbols = 0
+    ready_count = 0
+    good_or_strong = 0
+    bad_ready = 0
+    missed_pumps = 0
+    no_data_count = 0
 
     for token, meta in TESTS.items():
 
-        print("=" * 88)
+        print("=" * 92)
         print(token)
-        print("=" * 88)
+        print("=" * 92)
+
+        resolved, candidates = (
+            resolve_symbol(
+                meta["symbol"],
+                token,
+                contracts,
+            )
+        )
+
+        print(
+            "Requested symbol:",
+            meta["symbol"],
+        )
+
+        print(
+            "Resolved symbol:",
+            resolved,
+        )
+
+        if candidates:
+            print(
+                "Matching candidates:",
+                ", ".join(candidates),
+            )
 
         try:
             rows = fetch_symbol(
-                meta["symbol"],
+                resolved,
                 meta["listing_date"],
             )
 
@@ -682,6 +864,9 @@ def main():
                 "DATA ERROR:",
                 repr(exc),
             )
+
+            no_data_count += 1
+
             print()
             continue
 
@@ -691,10 +876,15 @@ def main():
 
         if first_i is None:
             print("NO DATA")
+
+            no_data_count += 1
+
             print()
             continue
 
-        candles = rows[first_i:]
+        candles = rows[
+            first_i:
+        ]
 
         usable_symbols += 1
 
@@ -719,8 +909,6 @@ def main():
             candles
         )
 
-        results[token] = checkpoints
-
         for item in checkpoints:
 
             line = (
@@ -729,28 +917,29 @@ def main():
                 f" | Route {item['route']}"
                 f" | Score {item['score']}"
                 f" | Entry {item['entry']:.8g}"
-                f" | From launch {item['gain']:+.2f}%"
+                f" | Launch {item['gain']:+.2f}%"
                 f" | 72H max {item['max_up']:+.2f}%"
                 f" | 72H DD {item['max_down']:+.2f}%"
+                f" | Path {item['path']['label']}"
             )
+
+            momentum = item[
+                "momentum"
+            ]
 
             if (
                 item["hour"] == 1
-                and item["momentum"]
-                is not None
+                and momentum is not None
             ):
-
-                m = item["momentum"]
-
                 line += (
                     f" | VolAccel "
-                    f"{m['vol_accel']:.2f}x"
+                    f"{momentum['vol_accel']:.2f}x"
                     f" | CloseStrength "
-                    f"{m['close_strength']:.2f}"
+                    f"{momentum['close_strength']:.2f}"
                     f" | MomPts "
-                    f"{m['points']}"
+                    f"{momentum['points']}"
                     f" | Breakout "
-                    f"{m['breakout']}"
+                    f"{momentum['breakout']}"
                 )
 
             print(line)
@@ -763,41 +952,33 @@ def main():
 
             ready_count += 1
 
-            quality = (
-                classify_signal_quality(
-                    ready
-                )
-            )
-
-            path = target_before_stop(
-                candles,
-                ready["entry_index"],
-                ready["entry"],
+            quality = ready_quality(
+                ready["path"]
             )
 
             if quality in (
-                "STRONG",
                 "GOOD",
+                "STRONG",
             ):
-                strong_good += 1
+                good_or_strong += 1
 
             if quality == "BAD":
-                bad_count += 1
+                bad_ready += 1
 
             print(
                 "DECISION: READY at "
-                f"{ready['hour']}H"
-                f" via {ready['route']}"
+                f"{ready['hour']}H "
+                f"via {ready['route']}"
             )
 
             print(
-                "QUALITY:",
+                "READY PATH:",
+                ready["path"]["label"],
+            )
+
+            print(
+                "READY QUALITY:",
                 quality,
-            )
-
-            print(
-                "TARGET/STOP PATH:",
-                path,
             )
 
         else:
@@ -805,34 +986,57 @@ def main():
                 "DECISION: NO READY LONG"
             )
 
-            if checkpoints:
-                ref = checkpoints[-1]
+            missed = (
+                best_missed_opportunity(
+                    checkpoints
+                )
+            )
 
-                if ref["max_up"] >= 15:
-                    missed_pumps += 1
+            if missed is not None:
 
-                    print(
-                        "MISSED PUMP: YES "
-                        f"({ref['max_up']:+.2f}% "
-                        "after last checkpoint)"
-                    )
+                missed_pumps += 1
 
-                else:
-                    print(
-                        "MISSED PUMP: NO"
-                    )
+                print(
+                    "MISSED OPPORTUNITY: YES"
+                )
+
+                print(
+                    "BEST MISSED CHECKPOINT:",
+                    f"{missed['hour']}H",
+                )
+
+                print(
+                    "MISSED PATH:",
+                    missed["path"]["label"],
+                )
+
+            else:
+                print(
+                    "MISSED OPPORTUNITY: NO"
+                )
 
         print()
-        time.sleep(0.4)
+
+        time.sleep(0.25)
 
     print()
-    print("#" * 88)
-    print("UNSEEN SUMMARY")
-    print("#" * 88)
+    print("#" * 92)
+    print("UNSEEN SUMMARY V2")
+    print("#" * 92)
+
+    print(
+        "Requested symbols:",
+        len(TESTS),
+    )
 
     print(
         "Usable symbols:",
         usable_symbols,
+    )
+
+    print(
+        "NO DATA symbols:",
+        no_data_count,
     )
 
     print(
@@ -842,30 +1046,31 @@ def main():
 
     print(
         "GOOD or STRONG READY:",
-        strong_good,
+        good_or_strong,
     )
 
     print(
         "BAD READY:",
-        bad_count,
+        bad_ready,
     )
 
     print(
-        "Missed pumps >=15%:",
+        "Missed opportunities "
+        ">=15% before -8%:",
         missed_pumps,
     )
 
     if ready_count > 0:
 
-        precision = (
-            strong_good
+        quality_rate = (
+            good_or_strong
             / ready_count
             * 100
         )
 
         print(
             "READY quality rate:",
-            f"{precision:.1f}%",
+            f"{quality_rate:.1f}%",
         )
 
     else:
@@ -875,29 +1080,54 @@ def main():
 
     print()
 
-    print(
-        "PASS GUIDE:"
-    )
+    if usable_symbols < 5:
 
-    print(
-        "- Prefer READY quality rate >= 60%"
-    )
+        print(
+            "VALIDATION STATUS: "
+            "INSUFFICIENT SAMPLE"
+        )
 
-    print(
-        "- Prefer BAD READY <= 1"
-    )
+        print(
+            "Need at least 5 usable "
+            "unseen symbols before judging V1.2."
+        )
 
-    print(
-        "- Prefer missed pumps reasonably low"
-    )
+    else:
+
+        if (
+            ready_count > 0
+            and (
+                good_or_strong
+                / ready_count
+                >= 0.60
+            )
+            and bad_ready <= 1
+        ):
+            print(
+                "VALIDATION STATUS: "
+                "PROMISING"
+            )
+
+        else:
+            print(
+                "VALIDATION STATUS: "
+                "NOT PASSED"
+            )
 
     print()
 
     print(
-        "IMPORTANT: "
-        "This is diagnostic validation only. "
-        "The -8% SL and +10/+20/+30% targets "
-        "are comparison rules, not live trade advice."
+        "IMPORTANT:"
+    )
+
+    print(
+        "The -8% stop and "
+        "+10/+15/+20/+30% levels "
+        "are diagnostic comparison rules."
+    )
+
+    print(
+        "They are not live trading advice."
     )
 
 
