@@ -23,9 +23,17 @@ DIAGNOSTIC_STOP_PCT = -8
 TARGETS = (10, 15, 20, 30)
 MISSED_THRESHOLD = 15
 
+TELEGRAM_BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN",
+    "",
+).strip()
 
-# These symbols were already used in earlier
-# tuning / replay / validation.
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    "",
+).strip()
+
+
 EXCLUDED_TOKENS = {
     "RE",
     "GRVT",
@@ -42,10 +50,9 @@ EXCLUDED_TOKENS = {
 
 
 SESSION = requests.Session()
-
 SESSION.headers.update({
     "User-Agent":
-        "ai-trade-scanner-forward-validation-v12/1.0"
+        "ai-trade-scanner-forward-validation-v12-telegram/2.0"
 })
 
 
@@ -57,40 +64,75 @@ def from_ms(value):
 
 
 def fmt_ms(value):
-    return from_ms(
-        value
-    ).strftime(
+    return from_ms(value).strftime(
         "%Y-%m-%d %H:%M UTC"
     )
 
 
 def floor_15m(value):
-    return (
-        value
-        - (
-            value
-            % CANDLE_MS
-        )
-    )
+    return value - (value % CANDLE_MS)
 
 
 def avg(values):
     if not values:
         return 0.0
-
-    return (
-        sum(values)
-        / len(values)
-    )
+    return sum(values) / len(values)
 
 
 def pct(a, b):
     if not b:
         return 0.0
+    return ((a / b) - 1.0) * 100.0
 
-    return (
-        (a / b) - 1.0
-    ) * 100.0
+
+def telegram_available():
+    return bool(
+        TELEGRAM_BOT_TOKEN
+        and TELEGRAM_CHAT_ID
+    )
+
+
+def send_telegram(text):
+    if not telegram_available():
+        print(
+            "TELEGRAM: disabled "
+            "(secrets not available)"
+        )
+        return False
+
+    url = (
+        "https://api.telegram.org/bot"
+        + TELEGRAM_BOT_TOKEN
+        + "/sendMessage"
+    )
+
+    try:
+        response = requests.post(
+            url,
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "disable_web_page_preview": True,
+            },
+            timeout=20,
+        )
+
+        if response.ok:
+            print("TELEGRAM: sent ✅")
+            return True
+
+        print(
+            "TELEGRAM ERROR:",
+            response.status_code,
+        )
+        return False
+
+    except Exception as exc:
+        print(
+            "TELEGRAM ERROR:",
+            repr(exc),
+        )
+        return False
 
 
 def request_json(
@@ -112,7 +154,6 @@ def request_json(
             )
 
             response.raise_for_status()
-
             return response.json()
 
         except Exception as exc:
@@ -143,19 +184,12 @@ def get_server_time_ms():
         )
 
         if (
-            isinstance(
-                payload,
-                dict,
-            )
-            and payload.get(
-                "serverTime"
-            )
+            isinstance(payload, dict)
+            and payload.get("serverTime")
             is not None
         ):
             return int(
-                payload[
-                    "serverTime"
-                ]
+                payload["serverTime"]
             )
 
     except Exception as exc:
@@ -193,25 +227,16 @@ def get_contracts():
     ):
         return contracts
 
-    data = payload.get(
-        "data"
-    )
+    data = payload.get("data")
 
     if (
-        isinstance(
-            data,
-            dict,
-        )
+        isinstance(data, dict)
         and isinstance(
-            data.get(
-                "contracts"
-            ),
+            data.get("contracts"),
             list,
         )
     ):
-        return data[
-            "contracts"
-        ]
+        return data["contracts"]
 
     return []
 
@@ -238,9 +263,7 @@ def normalize_categories(item):
 def token_from_symbol(symbol):
     suffix = "-SWAP-USDT"
 
-    if symbol.endswith(
-        suffix
-    ):
+    if symbol.endswith(suffix):
         return symbol[
             :-len(suffix)
         ]
@@ -256,30 +279,20 @@ def is_crypto_usdt_contract(item):
         return False
 
     symbol = str(
-        item.get(
-            "symbol",
-            "",
-        )
+        item.get("symbol", "")
     ).upper()
 
     status = str(
-        item.get(
-            "status",
-            "",
-        )
+        item.get("status", "")
     ).upper()
 
     quote = str(
-        item.get(
-            "quoteAsset",
-            "",
-        )
+        item.get("quoteAsset", "")
     ).upper()
 
     categories = " ".join(
         x.upper()
-        for x in
-        normalize_categories(
+        for x in normalize_categories(
             item
         )
     )
@@ -298,14 +311,10 @@ def is_crypto_usdt_contract(item):
     ):
         return False
 
-    if item.get(
-        "inverse"
-    ) is True:
+    if item.get("inverse") is True:
         return False
 
-    if item.get(
-        "isRwa"
-    ) is True:
+    if item.get("isRwa") is True:
         return False
 
     if str(
@@ -343,46 +352,22 @@ def contract_map(contracts):
             continue
 
         symbol = str(
-            item.get(
-                "symbol",
-                "",
-            )
+            item.get("symbol", "")
         ).upper()
 
         token = token_from_symbol(
             symbol
         )
 
-        if (
-            token
-            in EXCLUDED_TOKENS
-        ):
+        if token in EXCLUDED_TOKENS:
             continue
 
-        result[
-            symbol
-        ] = {
-            "symbol":
-                symbol,
-            "token":
-                token,
+        result[symbol] = {
+            "symbol": symbol,
+            "token": token,
             "categories":
                 normalize_categories(
                     item
-                ),
-            "underlying":
-                str(
-                    item.get(
-                        "underlying",
-                        "",
-                    )
-                ),
-            "index":
-                str(
-                    item.get(
-                        "index",
-                        "",
-                    )
                 ),
         }
 
@@ -410,15 +395,9 @@ def extract_rows(payload):
             dict,
         ):
             raw = (
-                raw.get(
-                    "list"
-                )
-                or raw.get(
-                    "rows"
-                )
-                or raw.get(
-                    "klines"
-                )
+                raw.get("list")
+                or raw.get("rows")
+                or raw.get("klines")
                 or []
             )
 
@@ -439,30 +418,12 @@ def extract_rows(payload):
 
         try:
             row = {
-                "t":
-                    int(
-                        item[0]
-                    ),
-                "o":
-                    float(
-                        item[1]
-                    ),
-                "h":
-                    float(
-                        item[2]
-                    ),
-                "l":
-                    float(
-                        item[3]
-                    ),
-                "c":
-                    float(
-                        item[4]
-                    ),
-                "v":
-                    float(
-                        item[5]
-                    ),
+                "t": int(item[0]),
+                "o": float(item[1]),
+                "h": float(item[2]),
+                "l": float(item[3]),
+                "c": float(item[4]),
+                "v": float(item[5]),
             }
 
         except (
@@ -485,8 +446,7 @@ def extract_rows(payload):
 
     return sorted(
         by_time.values(),
-        key=lambda x:
-            x["t"],
+        key=lambda x: x["t"],
     )
 
 
@@ -495,29 +455,19 @@ def fetch_klines(
     start_ms,
     end_ms,
 ):
-    if (
-        end_ms
-        <= start_ms
-    ):
+    if end_ms <= start_ms:
         return []
 
     payload = request_json(
         f"{BASE}/quote/v1/klines",
         params={
-            "symbol":
-                symbol,
-            "interval":
-                INTERVAL,
+            "symbol": symbol,
+            "interval": INTERVAL,
             "startTime":
-                int(
-                    start_ms
-                ),
+                int(start_ms),
             "endTime":
-                int(
-                    end_ms - 1
-                ),
-            "limit":
-                1000,
+                int(end_ms - 1),
+            "limit": 1000,
         },
     )
 
@@ -525,8 +475,6 @@ def fetch_klines(
         payload
     )
 
-    # Historical rows before detection
-    # are never allowed into forward validation.
     return [
         row
         for row in rows
@@ -539,13 +487,8 @@ def fetch_klines(
 
 
 def base_features(sample):
-    first_price = (
-        sample[0]["o"]
-    )
-
-    price = (
-        sample[-1]["c"]
-    )
+    first_price = sample[0]["o"]
+    price = sample[-1]["c"]
 
     high = max(
         x["h"]
@@ -557,9 +500,7 @@ def base_features(sample):
         for x in sample
     )
 
-    recent = sample[
-        -4:
-    ]
+    recent = sample[-4:]
 
     prior = (
         sample[-8:-4]
@@ -586,16 +527,14 @@ def base_features(sample):
     )
 
     vol_ratio = (
-        recent_vol
-        / prior_vol
+        recent_vol / prior_vol
         if prior_vol > 0
         else 1.0
     )
 
     higher_lows = sum(
         b["l"] > a["l"]
-        for a, b
-        in zip(
+        for a, b in zip(
             recent,
             recent[1:],
         )
@@ -603,8 +542,7 @@ def base_features(sample):
 
     higher_highs = sum(
         b["h"] > a["h"]
-        for a, b
-        in zip(
+        for a, b in zip(
             recent,
             recent[1:],
         )
@@ -628,12 +566,8 @@ def base_features(sample):
     )
 
     range_pos = (
-        (
-            price - low
-        )
-        / (
-            high - low
-        )
+        (price - low)
+        / (high - low)
         if high > low
         else 0.5
     )
@@ -655,11 +589,7 @@ def base_features(sample):
     elif vol_ratio >= 1.15:
         score += 1
 
-    if (
-        3
-        <= gain
-        <= 45
-    ):
+    if 3 <= gain <= 45:
         score += 1
 
     if range_pos >= 0.65:
@@ -675,12 +605,9 @@ def base_features(sample):
         score -= 3
 
     return {
-        "score":
-            score,
-        "price":
-            price,
-        "gain":
-            gain,
+        "score": score,
+        "price": price,
+        "gain": gain,
         "vol_ratio":
             vol_ratio,
     }
@@ -690,17 +617,10 @@ def momentum_features(sample):
     if len(sample) < 4:
         return None
 
-    candles = sample[
-        :4
-    ]
+    candles = sample[:4]
 
-    first_half = candles[
-        :2
-    ]
-
-    second_half = candles[
-        2:
-    ]
+    first_half = candles[:2]
+    second_half = candles[2:]
 
     vol1 = avg(
         [
@@ -732,17 +652,11 @@ def momentum_features(sample):
         for x in candles
     )
 
-    close = (
-        candles[-1]["c"]
-    )
+    close = candles[-1]["c"]
 
     close_strength = (
-        (
-            close - low
-        )
-        / (
-            high - low
-        )
+        (close - low)
+        / (high - low)
         if high > low
         else 0.5
     )
@@ -803,11 +717,7 @@ def momentum_features(sample):
     if higher_low:
         points += 1
 
-    if (
-        0.3
-        <= gain
-        <= 25
-    ):
+    if 0.3 <= gain <= 25:
         points += 1
 
     if gain >= 35:
@@ -832,9 +742,7 @@ def classify_v12(
     momentum,
     hour,
 ):
-    score = base[
-        "score"
-    ]
+    score = base["score"]
 
     if score >= 6:
         return (
@@ -891,16 +799,12 @@ def evaluate_checkpoint(
     rows,
     hour,
 ):
-    needed = (
-        hour * 4
-    )
+    needed = hour * 4
 
     if len(rows) < needed:
         return None
 
-    sample = rows[
-        :needed
-    ]
+    sample = rows[:needed]
 
     base = base_features(
         sample
@@ -923,22 +827,15 @@ def evaluate_checkpoint(
     )
 
     result = {
-        "hour":
-            hour,
-        "label":
-            label,
-        "route":
-            route,
-        "score":
-            base["score"],
-        "entry":
-            base["price"],
+        "hour": hour,
+        "label": label,
+        "route": route,
+        "score": base["score"],
+        "entry": base["price"],
         "launch_gain":
             base["gain"],
         "vol_ratio":
-            base[
-                "vol_ratio"
-            ],
+            base["vol_ratio"],
         "entry_time_ms":
             sample[-1]["t"],
         "entry_time_utc":
@@ -993,10 +890,8 @@ def future_stats(
 
     if not future:
         return {
-            "max_up":
-                0.0,
-            "max_down":
-                0.0,
+            "max_up": 0.0,
+            "max_down": 0.0,
         }
 
     highest = max(
@@ -1045,8 +940,7 @@ def target_stop_path(
                 1
                 + target / 100
             )
-        for target
-        in TARGETS
+        for target in TARGETS
     }
 
     future = future_rows(
@@ -1059,20 +953,14 @@ def target_stop_path(
 
     for candle in future:
 
-        # Conservative rule:
-        # if SL and TP are both touched
-        # in the same 15m candle,
-        # SL wins.
         if (
             candle["l"]
             <= stop_price
         ):
             if best_target == 0:
                 return {
-                    "best_target":
-                        0,
-                    "stopped":
-                        True,
+                    "best_target": 0,
+                    "stopped": True,
                     "label":
                         "STOP -8% BEFORE +10%",
                 }
@@ -1080,8 +968,7 @@ def target_stop_path(
             return {
                 "best_target":
                     best_target,
-                "stopped":
-                    True,
+                "stopped": True,
                 "label":
                     (
                         f"+{best_target}% "
@@ -1105,8 +992,7 @@ def target_stop_path(
         return {
             "best_target":
                 best_target,
-            "stopped":
-                False,
+            "stopped": False,
             "label":
                 (
                     f"+{best_target}% "
@@ -1115,10 +1001,8 @@ def target_stop_path(
         }
 
     return {
-        "best_target":
-            0,
-        "stopped":
-            False,
+        "best_target": 0,
+        "stopped": False,
         "label":
             "NO +10% / NO -8%",
     }
@@ -1135,9 +1019,7 @@ def ready_quality(path):
     if best >= 10:
         return "GOOD"
 
-    if path[
-        "stopped"
-    ]:
+    if path["stopped"]:
         return "BAD"
 
     return "FLAT"
@@ -1154,9 +1036,7 @@ def load_state():
         "r",
         encoding="utf-8",
     ) as f:
-        state = json.load(
-            f
-        )
+        state = json.load(f)
 
     if (
         state.get(
@@ -1165,9 +1045,7 @@ def load_state():
         != STATE_VERSION
     ):
         raise RuntimeError(
-            "Unsupported forward "
-            "state version; "
-            "refusing silent reset."
+            "Unsupported state version."
         )
 
     return state
@@ -1175,8 +1053,7 @@ def load_state():
 
 def save_state(state):
     temp = (
-        STATE_FILE
-        + ".tmp"
+        STATE_FILE + ".tmp"
     )
 
     with open(
@@ -1203,10 +1080,7 @@ def state_signature(state):
         state,
         ensure_ascii=False,
         sort_keys=True,
-        separators=(
-            ",",
-            ":",
-        ),
+        separators=(",", ":"),
     )
 
 
@@ -1237,16 +1111,46 @@ def initialize_state(
         "initialized_at_ms":
             now_ms,
         "initialized_at_utc":
-            fmt_ms(
-                now_ms
-            ),
+            fmt_ms(now_ms),
         "known_symbols":
             sorted(
                 current_symbols
             ),
-        "candidates":
-            {},
+        "candidates": {},
+        "telegram_setup_notified":
+            False,
     }
+
+
+def send_setup_notification(
+    state,
+):
+    if state.get(
+        "telegram_setup_notified",
+        False,
+    ):
+        return False
+
+    message = (
+        "✅ شکارچی لیست‌های توبیت\n\n"
+        "Forward Validation V1.2 به تلگرام متصل شد.\n"
+        "حالت: Shadow Mode\n"
+        "معامله واقعی: خاموش\n\n"
+        "از این به بعد فقط هنگام رخداد مهم پیام می‌فرستم:\n"
+        "• لیست جدید\n"
+        "• نتیجه 1H / 2H / 4H\n"
+        "• نتیجه نهایی 72H"
+    )
+
+    if send_telegram(
+        message
+    ):
+        state[
+            "telegram_setup_notified"
+        ] = True
+        return True
+
+    return False
 
 
 def add_candidate(
@@ -1254,9 +1158,7 @@ def add_candidate(
     info,
     now_ms,
 ):
-    symbol = info[
-        "symbol"
-    ]
+    symbol = info["symbol"]
 
     anchor_ms = floor_15m(
         now_ms
@@ -1268,33 +1170,17 @@ def add_candidate(
         "symbol":
             symbol,
         "token":
-            info[
-                "token"
-            ],
+            info["token"],
         "detected_at_ms":
             now_ms,
         "detected_at_utc":
-            fmt_ms(
-                now_ms
-            ),
+            fmt_ms(now_ms),
         "anchor_ms":
             anchor_ms,
         "anchor_utc":
-            fmt_ms(
-                anchor_ms
-            ),
+            fmt_ms(anchor_ms),
         "categories":
-            info[
-                "categories"
-            ],
-        "underlying":
-            info[
-                "underlying"
-            ],
-        "index":
-            info[
-                "index"
-            ],
+            info["categories"],
         "status":
             "TRACKING",
         "checkpoints":
@@ -1310,13 +1196,9 @@ def candidate_age_hours(
 ):
     return (
         now_ms
-        - candidate[
-            "anchor_ms"
-        ]
+        - candidate["anchor_ms"]
     ) / (
-        60
-        * 60
-        * 1000
+        60 * 60 * 1000
     )
 
 
@@ -1340,15 +1222,58 @@ def fetch_candidate_rows(
     )
 
     return fetch_klines(
-        candidate[
-            "symbol"
-        ],
+        candidate["symbol"],
         anchor_ms,
         min(
             now_ms,
             max_end,
         ),
     )
+
+
+def checkpoint_message(
+    candidate,
+    checkpoint,
+):
+    hour = checkpoint["hour"]
+
+    text = (
+        "📊 شکارچی لیست‌های توبیت\n\n"
+        f"{candidate['symbol']}\n"
+        f"بررسی {hour}H\n\n"
+        f"وضعیت: {checkpoint['label']}\n"
+        f"Route: {checkpoint['route']}\n"
+        f"Score: {checkpoint['score']}\n"
+        f"Entry: {checkpoint['entry']:.8g}\n"
+        f"From detection: "
+        f"{checkpoint['launch_gain']:+.2f}%\n"
+        f"Time: "
+        f"{checkpoint['entry_time_utc']}"
+    )
+
+    momentum = checkpoint.get(
+        "momentum"
+    )
+
+    if momentum:
+        text += (
+            "\n\n"
+            f"VolAccel: "
+            f"{momentum['vol_accel']:.2f}x\n"
+            f"CloseStrength: "
+            f"{momentum['close_strength']:.2f}\n"
+            f"Momentum Points: "
+            f"{momentum['points']}\n"
+            f"Breakout: "
+            f"{momentum['breakout']}"
+        )
+
+    text += (
+        "\n\n⚠️ Shadow Validation — "
+        "معامله‌ای باز نشده."
+    )
+
+    return text
 
 
 def process_checkpoints(
@@ -1365,12 +1290,8 @@ def process_checkpoints(
         )
     )
 
-    for hour in (
-        CHECKPOINT_HOURS
-    ):
-        key = str(
-            hour
-        )
+    for hour in CHECKPOINT_HOURS:
+        key = str(hour)
 
         if (
             key
@@ -1393,60 +1314,37 @@ def process_checkpoints(
         if checkpoint is None:
             print(
                 f"  {hour}H due, "
-                "but not enough "
-                "15m candles yet."
+                "but not enough candles."
             )
-
             continue
 
         candidate[
             "checkpoints"
-        ][key] = (
-            checkpoint
-        )
+        ][key] = checkpoint
 
         changed = True
 
-        line = (
+        print(
             f"  NEW {hour}H CHECKPOINT"
             f" | {checkpoint['label']}"
             f" | Route {checkpoint['route']}"
             f" | Score {checkpoint['score']}"
-            f" | Entry "
-            f"{checkpoint['entry']:.8g}"
-            f" | Launch "
-            f"{checkpoint['launch_gain']:+.2f}%"
         )
 
-        momentum = checkpoint.get(
-            "momentum"
-        )
-
-        if momentum:
-            line += (
-                f" | VolAccel "
-                f"{momentum['vol_accel']:.2f}x"
-                f" | CloseStrength "
-                f"{momentum['close_strength']:.2f}"
-                f" | MomPts "
-                f"{momentum['points']}"
-                f" | Breakout "
-                f"{momentum['breakout']}"
+        send_telegram(
+            checkpoint_message(
+                candidate,
+                checkpoint,
             )
-
-        print(
-            line
         )
 
     return changed
 
 
 def first_ready_checkpoint(
-    candidate
+    candidate,
 ):
-    for hour in (
-        CHECKPOINT_HOURS
-    ):
+    for hour in CHECKPOINT_HOURS:
         item = (
             candidate[
                 "checkpoints"
@@ -1457,9 +1355,7 @@ def first_ready_checkpoint(
 
         if (
             item
-            and item[
-                "label"
-            ]
+            and item["label"]
             == "READY LONG"
         ):
             return item
@@ -1473,9 +1369,7 @@ def can_finalize(
     now_ms,
 ):
     if (
-        candidate[
-            "status"
-        ]
+        candidate["status"]
         == "FINALIZED"
     ):
         return False
@@ -1509,9 +1403,7 @@ def can_finalize(
     )
 
     required_last_ms = (
-        cp4[
-            "entry_time_ms"
-        ]
+        cp4["entry_time_ms"]
         + (
             72
             * 60
@@ -1534,9 +1426,7 @@ def finalize_candidate(
 ):
     checkpoint_paths = {}
 
-    for hour in (
-        CHECKPOINT_HOURS
-    ):
+    for hour in CHECKPOINT_HOURS:
         checkpoint = (
             candidate[
                 "checkpoints"
@@ -1548,9 +1438,7 @@ def finalize_candidate(
             checkpoint[
                 "entry_time_ms"
             ],
-            checkpoint[
-                "entry"
-            ],
+            checkpoint["entry"],
             72,
         )
 
@@ -1559,9 +1447,7 @@ def finalize_candidate(
             checkpoint[
                 "entry_time_ms"
             ],
-            checkpoint[
-                "entry"
-            ],
+            checkpoint["entry"],
             72,
         )
 
@@ -1569,13 +1455,9 @@ def finalize_candidate(
             str(hour)
         ] = {
             "max_up":
-                stats[
-                    "max_up"
-                ],
+                stats["max_up"],
             "max_down":
-                stats[
-                    "max_down"
-                ],
+                stats["max_down"],
             "path":
                 path,
         }
@@ -1588,9 +1470,7 @@ def finalize_candidate(
 
     if ready is not None:
         key = str(
-            ready[
-                "hour"
-            ]
+            ready["hour"]
         )
 
         ready_path = (
@@ -1603,13 +1483,9 @@ def finalize_candidate(
             "decision":
                 "READY",
             "ready_hour":
-                ready[
-                    "hour"
-                ],
+                ready["hour"],
             "ready_route":
-                ready[
-                    "route"
-                ],
+                ready["route"],
             "quality":
                 ready_quality(
                     ready_path
@@ -1619,15 +1495,11 @@ def finalize_candidate(
             "ready_max_up":
                 checkpoint_paths[
                     key
-                ][
-                    "max_up"
-                ],
+                ]["max_up"],
             "ready_max_down":
                 checkpoint_paths[
                     key
-                ][
-                    "max_down"
-                ],
+                ]["max_down"],
             "missed_opportunity":
                 False,
             "checkpoint_paths":
@@ -1638,23 +1510,16 @@ def finalize_candidate(
         best_hour = None
         best_target = 0
 
-        for hour in (
-            CHECKPOINT_HOURS
-        ):
+        for hour in CHECKPOINT_HOURS:
             target = (
                 checkpoint_paths[
                     str(hour)
-                ][
-                    "path"
-                ][
+                ]["path"][
                     "best_target"
                 ]
             )
 
-            if (
-                target
-                > best_target
-            ):
+            if target > best_target:
                 best_target = target
                 best_hour = hour
 
@@ -1700,11 +1565,63 @@ def finalize_candidate(
         "final_result"
     ] = result
 
-    candidate[
-        "status"
-    ] = "FINALIZED"
+    candidate["status"] = (
+        "FINALIZED"
+    )
 
     return result
+
+
+def final_message(
+    candidate,
+    result,
+):
+    symbol = candidate["symbol"]
+
+    if result["decision"] == "READY":
+        return (
+            "🏁 نتیجه نهایی Shadow Validation\n\n"
+            f"{symbol}\n"
+            f"Decision: READY LONG\n"
+            f"Signal: "
+            f"{result['ready_hour']}H\n"
+            f"Route: "
+            f"{result['ready_route']}\n"
+            f"Quality: "
+            f"{result['quality']}\n"
+            f"Path: "
+            f"{result['ready_path']['label']}\n"
+            f"Max: "
+            f"{result['ready_max_up']:+.2f}%\n"
+            f"DD: "
+            f"{result['ready_max_down']:+.2f}%\n\n"
+            "⚠️ این فقط نتیجه آزمایشی است؛ "
+            "معامله واقعی باز نشده."
+        )
+
+    if result[
+        "missed_opportunity"
+    ]:
+        missed_text = (
+            "YES\n"
+            f"Best checkpoint: "
+            f"{result['best_missed_hour']}H\n"
+            f"Target before stop: "
+            f"+{result['best_missed_target']}%"
+        )
+
+    else:
+        missed_text = "NO"
+
+    return (
+        "🏁 نتیجه نهایی Shadow Validation\n\n"
+        f"{symbol}\n"
+        "Decision: NO READY LONG\n"
+        f"Missed opportunity >=15% "
+        f"before -8%: {missed_text}\n\n"
+        "⚠️ این فقط نتیجه آزمایشی است؛ "
+        "معامله واقعی باز نشده."
+    )
 
 
 def summary_counts(state):
@@ -1738,9 +1655,7 @@ def summary_counts(state):
         if (
             x[
                 "final_result"
-            ][
-                "decision"
-            ]
+            ]["decision"]
             == "READY"
         )
     ]
@@ -1751,9 +1666,7 @@ def summary_counts(state):
         if (
             x[
                 "final_result"
-            ][
-                "quality"
-            ]
+            ]["quality"]
             in (
                 "GOOD",
                 "STRONG",
@@ -1767,9 +1680,7 @@ def summary_counts(state):
         if (
             x[
                 "final_result"
-            ][
-                "quality"
-            ]
+            ]["quality"]
             == "BAD"
         )
     ]
@@ -1785,35 +1696,25 @@ def summary_counts(state):
     ]
 
     return {
-        "tracking":
-            tracking,
+        "tracking": tracking,
         "finalized":
-            len(
-                finalized
-            ),
+            len(finalized),
         "ready":
-            len(
-                ready
-            ),
+            len(ready),
         "good_or_strong":
-            len(
-                good
-            ),
+            len(good),
         "bad":
-            len(
-                bad
-            ),
+            len(bad),
         "missed":
-            len(
-                missed
-            ),
+            len(missed),
     }
 
 
 def main():
     print(
         "NEW LISTING HUNTER V1.2 "
-        "- FORWARD SHADOW VALIDATION"
+        "- FORWARD SHADOW VALIDATION "
+        "+ TELEGRAM"
     )
 
     print(
@@ -1821,24 +1722,8 @@ def main():
     )
 
     print(
-        "New listings are detected "
-        "by comparing the live Toobit "
-        "contract set with persistent state."
-    )
-
-    print(
-        "Detection time is the forward "
-        "anchor; historical Klines before "
-        "detection are ignored."
-    )
-
-    print(
-        "Checkpoints: 1H / 2H / 4H"
-    )
-
-    print(
-        "Final review: after the 4H "
-        "checkpoint has a full 72H future."
+        "Telegram alerts only on "
+        "meaningful new events."
     )
 
     print()
@@ -1849,19 +1734,13 @@ def main():
 
     print(
         "Toobit/server time:",
-        fmt_ms(
-            now_ms
-        ),
+        fmt_ms(now_ms),
     )
 
-    contracts = (
-        get_contracts()
-    )
+    contracts = get_contracts()
 
-    current = (
-        contract_map(
-            contracts
-        )
+    current = contract_map(
+        contracts
     )
 
     current_symbols = set(
@@ -1870,9 +1749,12 @@ def main():
 
     print(
         "Active crypto USDT contracts:",
-        len(
-            current_symbols
-        ),
+        len(current_symbols),
+    )
+
+    print(
+        "Telegram available:",
+        telegram_available(),
     )
 
     print()
@@ -1880,47 +1762,43 @@ def main():
     state = load_state()
 
     if state is None:
-
         state = initialize_state(
             current_symbols,
             now_ms,
         )
 
-        save_state(
+        send_setup_notification(
             state
         )
 
-        write_changed(
-            True
-        )
+        save_state(state)
+        write_changed(True)
 
         print(
             "BASELINE CREATED ✅"
         )
 
         print(
-            "Existing contracts were "
-            "saved as known symbols; "
-            "none are treated as "
-            "new listings."
-        )
-
-        print(
-            "From the NEXT run onward, "
-            "newly appearing contracts "
-            "can enter forward tracking."
-        )
-
-        print(
             "STATE_CHANGED: YES"
         )
-
         return
 
-    before = (
-        state_signature(
-            state
-        )
+    before = state_signature(
+        state
+    )
+
+    # برای State قدیمی که قبل از
+    # اضافه‌شدن تلگرام ساخته شده.
+    if (
+        "telegram_setup_notified"
+        not in state
+    ):
+        state[
+            "telegram_setup_notified"
+        ] = False
+
+    send_setup_notification(
+        state
     )
 
     known_symbols = set(
@@ -1938,13 +1816,10 @@ def main():
     print(
         "New contracts since "
         "saved state:",
-        len(
-            new_symbols
-        ),
+        len(new_symbols),
     )
 
     if new_symbols:
-
         for symbol in new_symbols:
             print(
                 "  🆕 DETECTED:",
@@ -1953,10 +1828,20 @@ def main():
 
             add_candidate(
                 state,
-                current[
-                    symbol
-                ],
+                current[symbol],
                 now_ms,
+            )
+
+            send_telegram(
+                "🆕 شکارچی لیست‌های توبیت\n\n"
+                f"قرارداد جدید پیدا شد:\n"
+                f"{symbol}\n\n"
+                f"Detected: "
+                f"{fmt_ms(now_ms)}\n"
+                "وضعیت: Forward Shadow Tracking\n\n"
+                "بررسی‌های 1H / 2H / 4H "
+                "به‌صورت خودکار انجام می‌شود.\n"
+                "⚠️ معامله واقعی باز نشده."
             )
 
     else:
@@ -1965,7 +1850,6 @@ def main():
             "detected on this run."
         )
 
-    # Never forget a symbol once seen.
     state[
         "known_symbols"
     ] = sorted(
@@ -2004,50 +1888,22 @@ def main():
         )
 
         print(
-            candidate[
-                "symbol"
-            ],
+            candidate["symbol"],
             "|",
-            candidate[
-                "status"
-            ],
+            candidate["status"],
             "| age",
             f"{age_hours:.1f}h",
-            "| detected",
-            candidate[
-                "detected_at_utc"
-            ],
         )
 
         if (
-            candidate[
-                "status"
-            ]
+            candidate["status"]
             == "FINALIZED"
         ):
-            result = (
-                candidate[
-                    "final_result"
-                ]
-            )
-
-            print(
-                "  FINAL:",
-                result[
-                    "decision"
-                ],
-                "| quality",
-                result[
-                    "quality"
-                ],
-            )
-
             continue
 
         checkpoint_due = any(
             (
-                age_hours
-                >= hour
+                age_hours >= hour
                 and str(hour)
                 not in candidate[
                     "checkpoints"
@@ -2066,38 +1922,12 @@ def main():
             checkpoint_due
             or final_due
         ):
-            pending = [
-                hour
-                for hour
-                in CHECKPOINT_HOURS
-                if str(hour)
-                not in candidate[
-                    "checkpoints"
-                ]
-            ]
-
-            if pending:
-                print(
-                    "  Waiting for "
-                    "next checkpoint:",
-                    f"{max(pending[0] - age_hours, 0):.2f}h",
-                )
-
-            else:
-                print(
-                    "  Waiting for final "
-                    "72H review:",
-                    f"{max(FINALIZE_AFTER_HOURS - age_hours, 0):.2f}h",
-                )
-
             continue
 
         try:
-            rows = (
-                fetch_candidate_rows(
-                    candidate,
-                    now_ms,
-                )
+            rows = fetch_candidate_rows(
+                candidate,
+                now_ms,
             )
 
         except Exception as exc:
@@ -2105,14 +1935,11 @@ def main():
                 "  DATA ERROR:",
                 repr(exc),
             )
-
             continue
 
         print(
             "  Forward 15m rows:",
-            len(
-                rows
-            ),
+            len(rows),
         )
 
         process_checkpoints(
@@ -2138,115 +1965,23 @@ def main():
                 "  ✅ FINALIZED"
             )
 
-            if (
-                result[
-                    "decision"
-                ]
-                == "READY"
-            ):
-                print(
-                    "  READY:",
-                    f"{result['ready_hour']}H",
-                    "|",
-                    result[
-                        "ready_route"
-                    ],
+            send_telegram(
+                final_message(
+                    candidate,
+                    result,
                 )
-
-                print(
-                    "  QUALITY:",
-                    result[
-                        "quality"
-                    ],
-                )
-
-                print(
-                    "  PATH:",
-                    result[
-                        "ready_path"
-                    ][
-                        "label"
-                    ],
-                )
-
-                print(
-                    "  MAX:",
-                    f"{result['ready_max_up']:+.2f}%",
-                    "| DD:",
-                    f"{result['ready_max_down']:+.2f}%",
-                )
-
-            else:
-                print(
-                    "  DECISION: NO READY"
-                )
-
-                print(
-                    f"  MISSED OPPORTUNITY "
-                    f">={MISSED_THRESHOLD}% "
-                    "BEFORE -8%:",
-                    result[
-                        "missed_opportunity"
-                    ],
-                )
-
-                if result[
-                    "missed_opportunity"
-                ]:
-                    print(
-                        "  BEST MISSED:",
-                        f"{result['best_missed_hour']}H",
-                        "|",
-                        f"+{result['best_missed_target']}%",
-                    )
-
-        elif all(
-            str(hour)
-            in candidate[
-                "checkpoints"
-            ]
-            for hour
-            in CHECKPOINT_HOURS
-        ):
-            remaining = (
-                FINALIZE_AFTER_HOURS
-                - age_hours
             )
 
-            if remaining > 0:
-                print(
-                    "  All checkpoints "
-                    "recorded. "
-                    "Final review in about:",
-                    f"{remaining:.2f}h",
-                )
-
-            else:
-                print(
-                    "  Final review due; "
-                    "waiting for enough "
-                    "15m data."
-                )
-
-    counts = (
-        summary_counts(
-            state
-        )
+    counts = summary_counts(
+        state
     )
 
     print()
-
-    print(
-        "#" * 88
-    )
-
+    print("#" * 88)
     print(
         "FORWARD VALIDATION SUMMARY"
     )
-
-    print(
-        "#" * 88
-    )
+    print("#" * 88)
 
     print(
         "Baseline initialized:",
@@ -2275,23 +2010,17 @@ def main():
 
     print(
         "Currently tracking:",
-        counts[
-            "tracking"
-        ],
+        counts["tracking"],
     )
 
     print(
         "Finalized cases:",
-        counts[
-            "finalized"
-        ],
+        counts["finalized"],
     )
 
     print(
         "READY signals:",
-        counts[
-            "ready"
-        ],
+        counts["ready"],
     )
 
     print(
@@ -2303,31 +2032,21 @@ def main():
 
     print(
         "BAD READY:",
-        counts[
-            "bad"
-        ],
+        counts["bad"],
     )
 
     print(
-        f"Missed opportunities "
-        f">={MISSED_THRESHOLD}% "
-        "before -8%:",
-        counts[
-            "missed"
-        ],
+        "Missed opportunities "
+        ">=15% before -8%:",
+        counts["missed"],
     )
 
-    if counts[
-        "ready"
-    ] > 0:
-
+    if counts["ready"] > 0:
         quality_rate = (
             counts[
                 "good_or_strong"
             ]
-            / counts[
-                "ready"
-            ]
+            / counts["ready"]
             * 100
         )
 
@@ -2341,12 +2060,7 @@ def main():
             "READY quality rate: N/A"
         )
 
-    if (
-        counts[
-            "finalized"
-        ]
-        < 5
-    ):
+    if counts["finalized"] < 5:
         print(
             "VALIDATION STATUS: "
             "COLLECTING SAMPLE"
@@ -2364,23 +2078,13 @@ def main():
             "SAMPLE AVAILABLE"
         )
 
-        print(
-            "Review quality and missed "
-            "opportunities before any "
-            "strategy change."
-        )
-
     changed = (
-        state_signature(
-            state
-        )
+        state_signature(state)
         != before
     )
 
     if changed:
-        save_state(
-            state
-        )
+        save_state(state)
 
     write_changed(
         changed
@@ -2403,7 +2107,16 @@ def main():
     )
 
     print(
-        "This is shadow validation only. "
+        "Telegram alerts:",
+        (
+            "ENABLED"
+            if telegram_available()
+            else "DISABLED"
+        ),
+    )
+
+    print(
+        "Shadow mode only. "
         "No exchange orders are created."
     )
 
