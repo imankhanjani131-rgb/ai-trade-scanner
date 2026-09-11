@@ -1,0 +1,108 @@
+name: New Listing Early Hunter
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: new-listing-early-hunter
+  cancel-in-progress: false
+
+jobs:
+  early-hunter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run Early Hunter
+        id: hunter
+        continue-on-error: true
+        run: |
+          set +e
+
+          python new_listing_early_hunter.py > early_output.txt 2>&1
+
+          CODE=$?
+
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+
+          cat early_output.txt
+
+          exit 0
+
+      - name: Show Results in Summary
+        if: always()
+        run: |
+          echo "## New Listing Early Hunter" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Python exit code: ${{ steps.hunter.outputs.exit_code }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+
+          cat early_output.txt >> "$GITHUB_STEP_SUMMARY" || true
+
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save Early Hunter State
+        if: steps.hunter.outputs.exit_code == '0'
+        run: |
+          CHANGED="NO"
+
+          if [ -f early_state_changed.txt ]; then
+            CHANGED=$(cat early_state_changed.txt)
+          fi
+
+          echo "STATE_CHANGED=$CHANGED"
+
+          if [ "$CHANGED" != "YES" ]; then
+            echo "No state change. Nothing to save."
+            exit 0
+          fi
+
+          if [ ! -f early_hunter_state.json ]; then
+            echo "Early Hunter state file not found."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add early_hunter_state.json
+
+          if git diff --cached --quiet; then
+            echo "No Git changes detected."
+            exit 0
+          fi
+
+          git commit -m "Update Early Hunter state [skip ci]"
+
+          git push
+
+      - name: Fail if Python Failed
+        if: steps.hunter.outputs.exit_code != '0'
+        run: |
+          echo "Early Hunter script failed."
+          exit 1
