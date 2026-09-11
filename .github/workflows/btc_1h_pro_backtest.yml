@@ -1,0 +1,70 @@
+name: BTC 1H PRO Backtest
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run BTC 1H PRO Backtest
+        id: backtest
+        continue-on-error: true
+        run: |
+          set +e
+
+          python btc_1h_pro_backtest.py > btc_backtest_output.txt 2>&1
+
+          CODE=$?
+
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+
+          cat btc_backtest_output.txt
+
+          exit 0
+
+      - name: Show Results in Summary
+        if: always()
+        run: |
+          echo "## BTC 1H PRO Backtest" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Python exit code: ${{ steps.backtest.outputs.exit_code }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+
+          cat btc_backtest_output.txt >> "$GITHUB_STEP_SUMMARY" || true
+
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Backtest Results
+        if: steps.backtest.outputs.exit_code == '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-1h-pro-backtest-results
+          path: btc_1h_pro_backtest_results.json
+          retention-days: 30
+
+      - name: Fail if Backtest Failed
+        if: steps.backtest.outputs.exit_code != '0'
+        run: |
+          echo "BTC 1H PRO Backtest failed."
+          exit 1
