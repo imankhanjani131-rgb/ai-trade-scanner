@@ -1,0 +1,108 @@
+name: BTC 1H PRO
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: btc-1h-pro
+  cancel-in-progress: false
+
+jobs:
+  btc-1h-pro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run BTC 1H PRO
+        id: btc
+        continue-on-error: true
+        run: |
+          set +e
+
+          python btc_1h_pro.py > btc_1h_output.txt 2>&1
+
+          CODE=$?
+
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+
+          cat btc_1h_output.txt
+
+          exit 0
+
+      - name: Show Results in Summary
+        if: always()
+        run: |
+          echo "## BTC 1H PRO" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Python exit code: ${{ steps.btc.outputs.exit_code }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+
+          cat btc_1h_output.txt >> "$GITHUB_STEP_SUMMARY" || true
+
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save BTC State
+        if: steps.btc.outputs.exit_code == '0'
+        run: |
+          CHANGED="NO"
+
+          if [ -f btc_1h_pro_state_changed.txt ]; then
+            CHANGED=$(cat btc_1h_pro_state_changed.txt)
+          fi
+
+          echo "STATE_CHANGED=$CHANGED"
+
+          if [ "$CHANGED" != "YES" ]; then
+            echo "No state change. Nothing to save."
+            exit 0
+          fi
+
+          if [ ! -f btc_1h_pro_state.json ]; then
+            echo "BTC state file not found."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add btc_1h_pro_state.json
+
+          if git diff --cached --quiet; then
+            echo "No Git changes detected."
+            exit 0
+          fi
+
+          git commit -m "Update BTC 1H PRO state [skip ci]"
+
+          git push
+
+      - name: Fail if Python Failed
+        if: steps.btc.outputs.exit_code != '0'
+        run: |
+          echo "BTC 1H PRO failed."
+          exit 1
