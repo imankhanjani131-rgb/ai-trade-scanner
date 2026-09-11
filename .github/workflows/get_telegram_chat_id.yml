@@ -1,0 +1,101 @@
+name: Get Telegram Chat ID
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  get-chat-id:
+    runs-on: ubuntu-latest
+
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
+    steps:
+      - name: Find Telegram Chat ID
+        run: |
+          python - <<'PY'
+          import os
+          import json
+          import urllib.request
+
+          token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+
+          if not token:
+              raise SystemExit("TELEGRAM_BOT_TOKEN is missing")
+
+          url = f"https://api.telegram.org/bot{token}/getUpdates"
+
+          with urllib.request.urlopen(url, timeout=20) as response:
+              data = json.load(response)
+
+          if not data.get("ok"):
+              print("Telegram API returned an error:")
+              print(data)
+              raise SystemExit(1)
+
+          updates = data.get("result", [])
+
+          print("Telegram updates found:", len(updates))
+          print()
+
+          found = []
+
+          for update in updates:
+              msg = (
+                  update.get("message")
+                  or update.get("edited_message")
+                  or update.get("channel_post")
+                  or update.get("edited_channel_post")
+              )
+
+              if not msg:
+                  continue
+
+              chat = msg.get("chat", {})
+              chat_id = chat.get("id")
+
+              if chat_id is None:
+                  continue
+
+              found.append({
+                  "chat_id": chat_id,
+                  "type": chat.get("type", ""),
+                  "username": chat.get("username", ""),
+                  "first_name": chat.get("first_name", ""),
+                  "title": chat.get("title", ""),
+              })
+
+          if not found:
+              print("NO CHAT ID FOUND")
+              print("Send /start or test to the bot, then run again.")
+          else:
+              print("CHAT IDS FOUND:")
+              print()
+
+              seen = set()
+
+              for item in reversed(found):
+                  chat_id = item["chat_id"]
+
+                  if chat_id in seen:
+                      continue
+
+                  seen.add(chat_id)
+
+                  print("CHAT_ID:", chat_id)
+                  print("TYPE:", item["type"])
+
+                  if item["username"]:
+                      print("USERNAME:", item["username"])
+
+                  if item["first_name"]:
+                      print("FIRST_NAME:", item["first_name"])
+
+                  if item["title"]:
+                      print("TITLE:", item["title"])
+
+                  print("-" * 40)
+          PY
