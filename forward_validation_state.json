@@ -6,7 +6,26 @@
       "categories": [
         "New"
       ],
-      "checkpoints": {},
+      "checkpoints": {
+        "1": {
+          "entry": 0.00965,
+          "entry_time_ms": 1789551000000,
+          "entry_time_utc": "2026-09-16 09:30 UTC",
+          "hour": 1,
+          "label": "READY LONG",
+          "launch_gain": 3.6519871106337254,
+          "momentum": {
+            "breakout": true,
+            "close_strength": 1.0,
+            "gain": 3.6519871106337254,
+            "points": 7,
+            "vol_accel": 0.37916111850865514
+          },
+          "route": "BASE_SCORE",
+          "score": 6,
+          "vol_ratio": 1.0
+        }
+      },
       "detected_at_ms": 1789548780311,
       "detected_at_utc": "2026-09-16 08:53 UTC",
       "final_result": null,
