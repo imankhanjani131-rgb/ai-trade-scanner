@@ -7,6 +7,23 @@
         "New"
       ],
       "checkpoints": {
+        "15": {
+          "breakout": false,
+          "chase": false,
+          "close_strength": 0.9411764705882371,
+          "green_ratio": 0.6666666666666666,
+          "higher_lows": 2,
+          "label": "EARLY READY",
+          "launch_gain": 1.7601760176017445,
+          "minutes": 15,
+          "price": 0.00925,
+          "pullback": -0.10799136069113979,
+          "reason": "15M MOMENTUM CONFIRMED",
+          "score": 5,
+          "time_ms": 1789549500000,
+          "time_utc": "2026-09-16 09:05 UTC",
+          "vol_accel": 0.46383866481223923
+        },
         "5": {
           "breakout": false,
           "chase": false,
