@@ -57,11 +57,28 @@
           "time_ms": 1789548900000,
           "time_utc": "2026-09-16 08:55 UTC",
           "vol_accel": 1.0
+        },
+        "60": {
+          "breakout": false,
+          "chase": false,
+          "close_strength": 0.8644067796610162,
+          "green_ratio": 0.75,
+          "higher_lows": 6,
+          "label": "READY CONFIRM",
+          "launch_gain": 5.610561056105601,
+          "minutes": 60,
+          "price": 0.0096,
+          "pullback": -0.8264462809917328,
+          "reason": "1H CONFIRMATION",
+          "score": 5,
+          "time_ms": 1789552200000,
+          "time_utc": "2026-09-16 09:50 UTC",
+          "vol_accel": 0.5181176470588235
         }
       },
       "detected_at_ms": 1789548997465,
       "detected_at_utc": "2026-09-16 08:56 UTC",
-      "status": "TRACKING",
+      "status": "COMPLETE",
       "symbol": "4STOCK-SWAP-USDT",
       "token": "4STOCK"
     }
