@@ -1,5 +1,20 @@
 {
-  "candidates": {},
+  "candidates": {
+    "4STOCK-SWAP-USDT": {
+      "anchor_ms": 1789548300000,
+      "anchor_utc": "2026-09-16 08:45 UTC",
+      "categories": [
+        "New"
+      ],
+      "checkpoints": {},
+      "detected_at_ms": 1789548780311,
+      "detected_at_utc": "2026-09-16 08:53 UTC",
+      "final_result": null,
+      "status": "TRACKING",
+      "symbol": "4STOCK-SWAP-USDT",
+      "token": "4STOCK"
+    }
+  },
   "initialized_at_ms": 1789058578218,
   "initialized_at_utc": "2026-09-10 16:42 UTC",
   "known_symbols": [
@@ -19,6 +34,7 @@
     "1MBABYDOGE-SWAP-USDT",
     "2Z-SWAP-USDT",
     "4-SWAP-USDT",
+    "4STOCK-SWAP-USDT",
     "A-SWAP-USDT",
     "AAVE-SWAP-USDT",
     "ACH-SWAP-USDT",
