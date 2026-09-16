@@ -35,6 +35,17 @@
           "route": "BASE",
           "score": 2,
           "vol_ratio": 0.9637943519188994
+        },
+        "4": {
+          "entry": 0.00936,
+          "entry_time_ms": 1789561800000,
+          "entry_time_utc": "2026-09-16 12:30 UTC",
+          "hour": 4,
+          "label": "REJECT",
+          "launch_gain": 0.5370569280343629,
+          "route": "BASE",
+          "score": 0,
+          "vol_ratio": 0.7827939652193943
         }
       },
       "detected_at_ms": 1789548780311,
