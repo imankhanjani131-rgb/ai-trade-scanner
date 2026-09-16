@@ -24,6 +24,23 @@
           "time_utc": "2026-09-16 09:05 UTC",
           "vol_accel": 0.46383866481223923
         },
+        "30": {
+          "breakout": false,
+          "chase": false,
+          "close_strength": 0.8749999999999993,
+          "green_ratio": 0.6666666666666666,
+          "higher_lows": 3,
+          "label": "EARLY READY",
+          "launch_gain": 3.0803080308030584,
+          "minutes": 30,
+          "price": 0.00937,
+          "pullback": -0.4250797024442088,
+          "reason": "30M STRUCTURE CONFIRMED",
+          "score": 5,
+          "time_ms": 1789550400000,
+          "time_utc": "2026-09-16 09:20 UTC",
+          "vol_accel": 0.5331890331890332
+        },
         "5": {
           "breakout": false,
           "chase": false,
