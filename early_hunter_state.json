@@ -6,7 +6,25 @@
       "categories": [
         "New"
       ],
-      "checkpoints": {},
+      "checkpoints": {
+        "5": {
+          "breakout": false,
+          "chase": false,
+          "close_strength": 0.5294117647058866,
+          "green_ratio": 1.0,
+          "higher_lows": 0,
+          "label": "WAIT",
+          "launch_gain": 0.990099009900991,
+          "minutes": 5,
+          "price": 0.00918,
+          "pullback": -0.8639308855291405,
+          "reason": "NOT ENOUGH CONFIRMATION",
+          "score": 2,
+          "time_ms": 1789548900000,
+          "time_utc": "2026-09-16 08:55 UTC",
+          "vol_accel": 1.0
+        }
+      },
       "detected_at_ms": 1789548997465,
       "detected_at_utc": "2026-09-16 08:56 UTC",
       "status": "TRACKING",
