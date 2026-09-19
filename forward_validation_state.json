@@ -50,8 +50,52 @@
       },
       "detected_at_ms": 1789548780311,
       "detected_at_utc": "2026-09-16 08:53 UTC",
-      "final_result": null,
-      "status": "TRACKING",
+      "final_result": {
+        "checkpoint_paths": {
+          "1": {
+            "max_down": -18.44559585492228,
+            "max_up": 39.481865284974084,
+            "path": {
+              "best_target": 30,
+              "label": "+30% THEN STOP -8%",
+              "stopped": true
+            }
+          },
+          "2": {
+            "max_down": -17.245005257623546,
+            "max_up": 41.53522607781284,
+            "path": {
+              "best_target": 30,
+              "label": "+30% THEN STOP -8%",
+              "stopped": true
+            }
+          },
+          "4": {
+            "max_down": -15.918803418803417,
+            "max_up": 43.8034188034188,
+            "path": {
+              "best_target": 30,
+              "label": "+30% THEN STOP -8%",
+              "stopped": true
+            }
+          }
+        },
+        "decision": "READY",
+        "finalized_at_ms": 1789822361084,
+        "finalized_at_utc": "2026-09-19 12:52 UTC",
+        "missed_opportunity": false,
+        "quality": "STRONG",
+        "ready_hour": 1,
+        "ready_max_down": -18.44559585492228,
+        "ready_max_up": 39.481865284974084,
+        "ready_path": {
+          "best_target": 30,
+          "label": "+30% THEN STOP -8%",
+          "stopped": true
+        },
+        "ready_route": "BASE_SCORE"
+      },
+      "status": "FINALIZED",
       "symbol": "4STOCK-SWAP-USDT",
       "token": "4STOCK"
     }
