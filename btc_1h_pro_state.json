@@ -1,7 +1,7 @@
 {
-  "last_signal_key": "LONG:1790190000000",
-  "last_signal_ms": 1790193647724,
-  "last_signal_side": "LONG",
+  "last_signal_key": "SHORT:1790204400000",
+  "last_signal_ms": 1790210607094,
+  "last_signal_side": "SHORT",
   "state_version": 1,
   "telegram_setup_notified": true
 }
