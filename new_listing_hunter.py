@@ -14,6 +14,30 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 TIMEOUT = 20
 
+VERSION = "V1.3 ENTRY GUARD"
+
+# Entry-quality guardrails
+READY_SCORE = 6
+SETUP_SCORE = 4
+
+# If price is this close to a recent resistance, do not call READY LONG
+# unless the breakout is actually confirmed.
+NEAR_RESISTANCE_PCT = 2.0
+
+# Breakout confirmation settings.
+BREAKOUT_BUFFER_PCT = 0.20
+BREAKOUT_MIN_VOLUME_RATIO = 1.10
+BREAKOUT_MIN_CLOSE_STRENGTH = 0.60
+
+# If price runs too far beyond resistance without a clean retest,
+# wait for a pullback instead of chasing.
+MAX_BREAKOUT_EXTENSION_PCT = 1.50
+
+# Extra anti-chase protection for very fast new-listing moves.
+ANTI_CHASE_TOTAL_GAIN_PCT = 45.0
+ANTI_CHASE_RECENT_RANGE_PCT = 15.0
+ANTI_CHASE_LAST_CANDLE_PCT = 7.0
+
 
 def utc_now():
     return datetime.now(timezone.utc)
@@ -343,6 +367,48 @@ def fetch_15m_klines(
     return rows
 
 
+def fmt_price(value):
+    value = float(value)
+
+    if value >= 100:
+        decimals = 2
+    elif value >= 1:
+        decimals = 4
+    elif value >= 0.1:
+        decimals = 5
+    elif value >= 0.01:
+        decimals = 6
+    elif value >= 0.001:
+        decimals = 7
+    else:
+        decimals = 8
+
+    result = f"{value:.{decimals}f}"
+    result = result.rstrip("0").rstrip(".")
+
+    return result or "0"
+
+
+def candle_close_strength(candle):
+    candle_range = candle["h"] - candle["l"]
+
+    if candle_range <= 0:
+        return 0.5
+
+    return (
+        candle["c"] - candle["l"]
+    ) / candle_range
+
+
+def percent_change(current, base):
+    if not base:
+        return 0.0
+
+    return (
+        (current / base) - 1.0
+    ) * 100.0
+
+
 def analyze(
     symbol,
     trading_since,
@@ -369,13 +435,9 @@ def analyze(
             )
         )
 
-    first_price = (
-        candles[0]["o"]
-    )
-
-    price = (
-        candles[-1]["c"]
-    )
+    first_price = candles[0]["o"]
+    latest = candles[-1]
+    price = latest["c"]
 
     high = max(
         x["h"]
@@ -395,21 +457,15 @@ def analyze(
         else []
     )
 
-    gain = (
-        (
-            price
-            / first_price
-        )
-        - 1
-    ) * 100
+    gain = percent_change(
+        price,
+        first_price
+    )
 
-    pullback = (
-        (
-            price
-            / high
-        )
-        - 1
-    ) * 100 if high > 0 else 0
+    pullback = percent_change(
+        price,
+        high
+    ) if high > 0 else 0.0
 
     recent_volume = (
         sum(
@@ -471,6 +527,9 @@ def analyze(
         else 0.5
     )
 
+    # -------------------------------------------------
+    # BASE SCORE
+    # -------------------------------------------------
     score = 0
 
     if price > sma4:
@@ -503,10 +562,186 @@ def analyze(
     if gain <= -12:
         score -= 3
 
-    if score >= 6:
+    # -------------------------------------------------
+    # V1.3 ENTRY GUARD
+    # -------------------------------------------------
+    # Recent resistance excludes the latest candle, so
+    # the current candle must prove it can break the level.
+    resistance_source = candles[:-1][-8:]
+
+    if resistance_source:
+        resistance = max(
+            x["h"]
+            for x in resistance_source
+        )
+    else:
+        resistance = high
+
+    if resistance > 0:
+        distance_to_resistance_pct = (
+            (resistance / price) - 1.0
+        ) * 100.0
+
+        breakout_extension_pct = (
+            (price / resistance) - 1.0
+        ) * 100.0
+    else:
+        distance_to_resistance_pct = 999.0
+        breakout_extension_pct = 0.0
+
+    previous_for_volume = candles[:-1][-3:]
+
+    if previous_for_volume:
+        previous_volume_avg = (
+            sum(
+                x["v"]
+                for x in previous_for_volume
+            )
+            / len(previous_for_volume)
+        )
+    else:
+        previous_volume_avg = latest["v"]
+
+    breakout_volume_ratio = (
+        latest["v"]
+        / previous_volume_avg
+        if previous_volume_avg > 0
+        else 1.0
+    )
+
+    latest_close_strength = (
+        candle_close_strength(
+            latest
+        )
+    )
+
+    breakout_level = (
+        resistance
+        * (
+            1.0
+            + (
+                BREAKOUT_BUFFER_PCT
+                / 100.0
+            )
+        )
+    )
+
+    raw_breakout = (
+        resistance > 0
+        and price > breakout_level
+    )
+
+    breakout_confirmed = (
+        raw_breakout
+        and latest["c"] > latest["o"]
+        and latest_close_strength
+        >= BREAKOUT_MIN_CLOSE_STRENGTH
+        and breakout_volume_ratio
+        >= BREAKOUT_MIN_VOLUME_RATIO
+    )
+
+    near_resistance = (
+        resistance > 0
+        and price <= resistance
+        and 0
+        <= distance_to_resistance_pct
+        <= NEAR_RESISTANCE_PCT
+    )
+
+    breakout_unconfirmed = (
+        resistance > 0
+        and price > resistance
+        and not breakout_confirmed
+    )
+
+    recent_low = min(
+        x["l"]
+        for x in recent
+    )
+
+    recent_range_pct = percent_change(
+        price,
+        recent_low
+    )
+
+    latest_candle_pct = percent_change(
+        latest["c"],
+        latest["o"]
+    )
+
+    chase_risk = (
+        gain >= ANTI_CHASE_TOTAL_GAIN_PCT
+        or recent_range_pct
+        >= ANTI_CHASE_RECENT_RANGE_PCT
+        or latest_candle_pct
+        >= ANTI_CHASE_LAST_CANDLE_PCT
+    )
+
+    # A breakout that is already stretched far above
+    # resistance should first retest the breakout area.
+    retest_ok = (
+        resistance > 0
+        and latest["l"]
+        <= resistance * 1.005
+        and price > resistance
+    )
+
+    overextended_breakout = (
+        breakout_confirmed
+        and breakout_extension_pct
+        > MAX_BREAKOUT_EXTENSION_PCT
+        and not retest_ok
+    )
+
+    entry_blocked = False
+    guard_reason = ""
+
+    if score >= READY_SCORE:
+
+        if near_resistance:
+            entry_blocked = True
+            guard_reason = (
+                "قیمت خیلی نزدیک مقاومت است؛ "
+                "اول شکست و بسته‌شدن معتبر بالای مقاومت لازم است."
+            )
+
+        elif breakout_unconfirmed:
+            entry_blocked = True
+            guard_reason = (
+                "قیمت از مقاومت عبور کرده ولی شکست هنوز "
+                "از نظر کندل و حجم تأیید نشده است."
+            )
+
+        elif overextended_breakout:
+            entry_blocked = True
+            guard_reason = (
+                "شکست تأیید شده اما قیمت بیش از حد از مقاومت "
+                "فاصله گرفته؛ منتظر پولبک/ری‌تست بمان."
+            )
+
+        elif chase_risk:
+            entry_blocked = True
+            guard_reason = (
+                "حرکت کوتاه‌مدت بیش از حد تند شده؛ "
+                "Anti-Chase ورود را تا پولبک مسدود کرد."
+            )
+
+    if score >= READY_SCORE and not entry_blocked:
         title = "🟢 آماده لانگ"
 
-    elif score >= 4:
+    elif score >= READY_SCORE and overextended_breakout:
+        title = "🟠 منتظر پولبک"
+
+    elif score >= READY_SCORE and (
+        near_resistance
+        or breakout_unconfirmed
+    ):
+        title = "🟠 منتظر تأیید شکست"
+
+    elif score >= READY_SCORE and chase_risk:
+        title = "🟠 Anti-Chase | صبر"
+
+    elif score >= SETUP_SCORE:
         title = "🟡 ستاپ اولیه"
 
     elif hour >= 4:
@@ -525,19 +760,30 @@ def analyze(
     body = (
         f"ارز: {display_symbol}\n"
         f"بررسی: {hour} ساعت بعد از شروع معامله\n"
+        f"نسخه: {VERSION}\n"
         f"امتیاز: {score}\n"
-        f"قیمت: {price}\n"
+        f"قیمت: {fmt_price(price)}\n"
         f"رشد از شروع: {gain:+.1f}٪\n"
         f"فاصله از سقف: {pullback:+.1f}٪\n"
-        f"نسبت حجم اخیر: {volume_ratio:.2f}x"
+        f"نسبت حجم اخیر: {volume_ratio:.2f}x\n"
+        f"مقاومت اخیر: {fmt_price(resistance)}\n"
+        f"فاصله تا مقاومت: "
+        f"{distance_to_resistance_pct:+.2f}٪\n"
+        f"حجم کندل شکست: "
+        f"{breakout_volume_ratio:.2f}x\n"
+        f"قدرت بسته‌شدن کندل: "
+        f"{latest_close_strength:.2f}\n"
+        f"تأیید شکست: "
+        f"{'بله ✅' if breakout_confirmed else 'خیر'}"
     )
 
-    if score >= 6:
-        recent_low = min(
-            x["l"]
-            for x in recent
+    if entry_blocked:
+        body += (
+            f"\n\n⛔ ورود فعلاً مسدود"
+            f"\nدلیل: {guard_reason}"
         )
 
+    if score >= READY_SCORE and not entry_blocked:
         sl = max(
             recent_low,
             price * 0.92
@@ -564,12 +810,19 @@ def analyze(
             + 4.0 * risk
         )
 
+        risk_pct = (
+            (risk / price) * 100.0
+            if price > 0
+            else 0.0
+        )
+
         body += (
-            f"\n\nورود تقریبی: {price}"
-            f"\nحد ضرر: {sl}"
-            f"\nهدف ۱: {tp1}"
-            f"\nهدف ۲: {tp2}"
-            f"\nهدف ۳: {tp3}"
+            f"\n\nورود تقریبی: {fmt_price(price)}"
+            f"\nحد ضرر: {fmt_price(sl)}"
+            f" ({risk_pct:.2f}٪)"
+            f"\nهدف ۱: {fmt_price(tp1)}"
+            f"\nهدف ۲: {fmt_price(tp2)}"
+            f"\nهدف ۳: {fmt_price(tp3)}"
         )
 
     return title, body
@@ -752,7 +1005,8 @@ def main():
                     "شکارچی لیست جدید\n\n"
                     f"{body}\n\n"
                     "⚠️ معامله خودکار "
-                    "باز نمی‌شود."
+                    "باز نمی‌شود.\n"
+                    f"نسخه: {VERSION}"
                 )
 
                 sent_hours.add(
