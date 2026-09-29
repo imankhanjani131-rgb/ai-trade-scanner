@@ -14,7 +14,7 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 TIMEOUT = 20
 
-VERSION = "V1.3 ENTRY GUARD"
+VERSION = "V1.3.1 ENTRY GUARD + PRIORITY ALERT"
 
 # Entry-quality guardrails
 READY_SCORE = 6
@@ -727,7 +727,7 @@ def analyze(
             )
 
     if score >= READY_SCORE and not entry_blocked:
-        title = "🟢 آماده لانگ"
+        title = "🚨🚨 سیگنال ورود معتبر 🚨🚨\n🟢 آماده لانگ\n🔔 همین الان بررسی کن"
 
     elif score >= READY_SCORE and overextended_breakout:
         title = "🟠 منتظر پولبک"
