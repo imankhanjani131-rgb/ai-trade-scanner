@@ -14,7 +14,7 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 TIMEOUT = 20
 
-VERSION = "V1.3.1 ENTRY GUARD + PRIORITY ALERT"
+VERSION = "V1.3.2 ENTRY GUARD + PRIORITY ALERT + QUIET FILTER"
 
 # Entry-quality guardrails
 READY_SCORE = 6
@@ -164,7 +164,7 @@ def detect_chat_id():
     return ""
 
 
-def send_telegram(text):
+def send_telegram(text, silent=False):
     if not TOKEN:
         print(
             "TELEGRAM_NOT_READY: "
@@ -186,7 +186,12 @@ def send_telegram(text):
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
             data={
                 "chat_id": cid,
-                "text": text
+                "text": text,
+                "disable_notification": (
+                    "true"
+                    if silent
+                    else "false"
+                )
             },
             timeout=TIMEOUT
         )
@@ -906,7 +911,8 @@ def main():
                 f"{symbol.replace('-SWAP-USDT', '/USDT')}\n"
                 f"وضعیت: {status_fa}\n"
                 "فعلاً ورود نکن؛ "
-                "ربات در حال جمع‌آوری داده است."
+                "ربات در حال جمع‌آوری داده است.",
+                silent=True
             )
 
         old_status = str(
@@ -937,7 +943,8 @@ def main():
                     f"ارز: "
                     f"{symbol.replace('-SWAP-USDT', '/USDT')}\n"
                     "ربات ۱، ۲ و ۴ ساعت بعد "
-                    "آن را بررسی می‌کند."
+                    "آن را بررسی می‌کند.",
+                    silent=True
                 )
 
         if record.get(
@@ -1000,13 +1007,20 @@ def main():
                     hour
                 )
 
+                priority_alert = (
+                    title.startswith(
+                        "🚨🚨 سیگنال ورود معتبر"
+                    )
+                )
+
                 send_telegram(
                     f"{title} | "
                     "شکارچی لیست جدید\n\n"
                     f"{body}\n\n"
                     "⚠️ معامله خودکار "
                     "باز نمی‌شود.\n"
-                    f"نسخه: {VERSION}"
+                    f"نسخه: {VERSION}",
+                    silent=not priority_alert
                 )
 
                 sent_hours.add(
