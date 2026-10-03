@@ -91,7 +91,7 @@
       "checkpoints": {},
       "detected_at_ms": 1791009476996,
       "detected_at_utc": "2026-10-03 06:37 UTC",
-      "status": "TRACKING",
+      "status": "COMPLETE",
       "symbol": "CT-SWAP-USDT",
       "token": "CT"
     }
