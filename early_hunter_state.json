@@ -81,6 +81,19 @@
       "status": "COMPLETE",
       "symbol": "4STOCK-SWAP-USDT",
       "token": "4STOCK"
+    },
+    "CT-SWAP-USDT": {
+      "anchor_ms": 1791009300000,
+      "anchor_utc": "2026-10-03 06:35 UTC",
+      "categories": [
+        "New"
+      ],
+      "checkpoints": {},
+      "detected_at_ms": 1791009476996,
+      "detected_at_utc": "2026-10-03 06:37 UTC",
+      "status": "TRACKING",
+      "symbol": "CT-SWAP-USDT",
+      "token": "CT"
     }
   },
   "initialized_at_ms": 1789125331828,
@@ -220,6 +233,7 @@
     "CRO-SWAP-USDT",
     "CROSS-SWAP-USDT",
     "CRV-SWAP-USDT",
+    "CT-SWAP-USDT",
     "CTK-SWAP-USDT",
     "CTR-SWAP-USDT",
     "CTSI-SWAP-USDT",
