@@ -105,7 +105,48 @@
       "categories": [
         "New"
       ],
-      "checkpoints": {},
+      "checkpoints": {
+        "1": {
+          "entry": 0.5294,
+          "entry_time_ms": 1791017100000,
+          "entry_time_utc": "2026-10-03 08:45 UTC",
+          "hour": 1,
+          "label": "WAIT",
+          "launch_gain": 0.7479018783184577,
+          "momentum": {
+            "breakout": true,
+            "close_strength": 0.45596502186133586,
+            "gain": 0.7479018783184577,
+            "points": 5,
+            "vol_accel": 1.0768609016559074
+          },
+          "route": "BASE",
+          "score": 3,
+          "vol_ratio": 1.0
+        },
+        "2": {
+          "entry": 0.51889,
+          "entry_time_ms": 1791020700000,
+          "entry_time_utc": "2026-10-03 09:45 UTC",
+          "hour": 2,
+          "label": "READY LONG",
+          "launch_gain": -1.252212305174416,
+          "route": "BASE_SCORE",
+          "score": 6,
+          "vol_ratio": 1.7473768569394872
+        },
+        "4": {
+          "entry": 0.5034,
+          "entry_time_ms": 1791027900000,
+          "entry_time_utc": "2026-10-03 11:45 UTC",
+          "hour": 4,
+          "label": "REJECT",
+          "launch_gain": -4.20004947951359,
+          "route": "BASE",
+          "score": 1,
+          "vol_ratio": 1.2144295661222346
+        }
+      },
       "detected_at_ms": 1791014791153,
       "detected_at_utc": "2026-10-03 08:06 UTC",
       "final_result": null,
