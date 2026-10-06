@@ -149,8 +149,52 @@
       },
       "detected_at_ms": 1791014791153,
       "detected_at_utc": "2026-10-03 08:06 UTC",
-      "final_result": null,
-      "status": "TRACKING",
+      "final_result": {
+        "checkpoint_paths": {
+          "1": {
+            "max_down": -31.07669059312429,
+            "max_up": 0.11333585190782536,
+            "path": {
+              "best_target": 0,
+              "label": "STOP -8% BEFORE +10%",
+              "stopped": true
+            }
+          },
+          "2": {
+            "max_down": -29.680664495365107,
+            "max_up": 0.1753743568001065,
+            "path": {
+              "best_target": 0,
+              "label": "STOP -8% BEFORE +10%",
+              "stopped": true
+            }
+          },
+          "4": {
+            "max_down": -27.516885180770757,
+            "max_up": 3.220103297576493,
+            "path": {
+              "best_target": 0,
+              "label": "STOP -8% BEFORE +10%",
+              "stopped": true
+            }
+          }
+        },
+        "decision": "READY",
+        "finalized_at_ms": 1791299235069,
+        "finalized_at_utc": "2026-10-06 15:07 UTC",
+        "missed_opportunity": false,
+        "quality": "BAD",
+        "ready_hour": 2,
+        "ready_max_down": -29.680664495365107,
+        "ready_max_up": 0.1753743568001065,
+        "ready_path": {
+          "best_target": 0,
+          "label": "STOP -8% BEFORE +10%",
+          "stopped": true
+        },
+        "ready_route": "BASE_SCORE"
+      },
+      "status": "FINALIZED",
       "symbol": "CT-SWAP-USDT",
       "token": "CT"
     }
